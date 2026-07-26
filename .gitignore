@@ -1,0 +1,12 @@
+*.o
+*.a
+*.so
+build/
+rawhttp
+vendor/
+*.dSYM/
+*.gcov
+*.gcda
+*.gcno
+compile_commands.json
+.cache/
