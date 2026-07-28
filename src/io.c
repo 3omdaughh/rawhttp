@@ -1,4 +1,4 @@
-#include "rawhttp/io.h"
+#include "rawhttp_/io.h"
 
 #include <errno.h>
 #include <sys/socket.h>
@@ -48,7 +48,7 @@ rh_err rh_recv_all(int fd, rh_buf *out)
         }
         if (n == 0) return RH_OK;
         if (errno == EINTR) continue;
-        LOG_DEBUG("[!] recv_all: failed after %zu bytes buffered (errno=%d)". out->len, errno)
+        LOG_DEBUG("[!] recv_all: failed after %zu bytes buffered (errno=%d)", out->len, errno);
         return RH_ERR_IO;
     }
 }

@@ -45,8 +45,8 @@ rh_err rh_request_build_get(const rh_url *url, rh_buf *out)
 
     RH_APPEND_LIT(out, "\r\n");
     RH_APPEND_LIT(out, "Connection: close\r\n");
-    RH_APPNED_LIT(out, "User-Agent: rawhttp/0.1\r\n");
-    RH_APPNED_LIT(out, "\r\n");
+    RH_APPEND_LIT(out, "User-Agent: rawhttp/0.1\r\n");
+    RH_APPEND_LIT(out, "\r\n");
 
     return RH_OK;
 }

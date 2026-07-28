@@ -94,7 +94,7 @@ rh_err rh_url_parse(const char *url_str, rh_url *out)
 
         char port_buf[6] = {0};
         memcpy(port_buf, colon + 1, port_len);
-        for (size_t i = 0, i < port_len; i++)
+        for (size_t i = 0; i < port_len; i++)
             if (!isdigit((unsigned char)port_buf[i]))
             {
                 LOG_DEBUG("[!] url parse: non-numeric port '%s'", port_buf);

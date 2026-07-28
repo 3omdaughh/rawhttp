@@ -17,6 +17,6 @@
  * connect.
 */
 
-rh_err rh_tcp_connect(const char *host, uint16_t port, int *out_fd);o
+rh_err rh_tcp_connect(const char *host, uint16_t port, int *out_fd);
 
 #endif /* RAWHTTP_SOCKET_H */

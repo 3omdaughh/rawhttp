@@ -3,8 +3,8 @@
 
 #include <stddef.h>
 
-#include "rawhttp/buf.h"
-#include "rawhttp/error.h"
+#include "rawhttp_/buf.h"
+#include "rawhttp_/error.h"
 
 /*
  * loops send() until every byte in `data`/`len` is on the wire,

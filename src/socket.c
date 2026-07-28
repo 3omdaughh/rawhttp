@@ -29,11 +29,11 @@ rh_err rh_tcp_connect(const char *host, uint16_t port, int *out_fd)
     }
 
     int fd = -1;
-    for (struct addinfo *rp = results; rp != NULL; rp = rp->ai_next)
+    for (struct addrinfo *rp = results; rp != NULL; rp = rp->ai_next)
     {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break // connected
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break; // connected
         close(fd);
         fd = -1;
     }

@@ -2,12 +2,12 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "rawhttp/buf.h"
-#include "rawhttp/error.h"
-#include "rawhttp/io.h"
-#include "rawhttp/request.h"
-#include "rawhttp/socket.h"
-#include "rawhttp/url.h"
+#include "rawhttp_/buf.h"
+#include "rawhttp_/error.h"
+#include "rawhttp_/io.h"
+#include "rawhttp_/request.h"
+#include "rawhttp_/socket.h"
+#include "rawhttp_/url.h"
 
 signed main(int argc, char** argv)
 {
@@ -68,7 +68,7 @@ signed main(int argc, char** argv)
     LOG_INFO("[~] sent %zu byte request", req.len);
 
     rh_buf resp;
-    err = rh_buf_init(resp, 0);
+    err = rh_buf_init(&resp, 0);
     if (err != RH_OK)
     {
         LOG_ERR("[!] failed to allicate response buffer: %s", rh_strerror(err));
@@ -96,7 +96,7 @@ cleanup_req:
     rh_buf_free(&req);
 cleanup_conn:
     close(fd);
-    rh_buf_free(&url);
+    rh_url_free(&url);
 
     return err == RH_OK ? 0 : 1;
 } 

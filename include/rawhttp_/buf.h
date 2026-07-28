@@ -19,7 +19,7 @@ typedef struct
 
 rh_err rh_buf_init(rh_buf *b, size_t initial_cap);
 
-rh_err rh_buf_append(rh_buf *b, const char *data, size_t n);
+rh_err rh_buf_append(rh_buf *b, const void *data, size_t n);
 
 void rh_buf_free(rh_buf *b);
 
