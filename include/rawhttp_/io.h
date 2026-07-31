@@ -25,4 +25,11 @@ rh_err rh_send_all(int fd, const void *data, size_t len);
 
 rh_err rh_recv_all(int fd, rh_buf *out);
 
+/* This is what makes Content-Length/chunked reads work correctly on keep-alive connections, where the peer never closes.
+ * On peer close, *out_eof is set to 1 and RH_OK is returned with no
+ * bytes appended. On any read, *out_eof is 0.
+ */
+rh_err rh_recv_some(rh_transport *t, rh_buf *out, int *out_eof);
+
+
 #endif /* RAWHTTP_IO_H */

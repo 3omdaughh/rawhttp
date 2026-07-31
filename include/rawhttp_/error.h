@@ -18,6 +18,7 @@ typedef enum
     RH_ERR_MEM,
     RH_ERR_INVAL,
     RH_ERR_TIMEOUT,
+    RH_ERR_LIMIT, // wellformed but exceeds a configured safty bound.
     RH_ERR_COUNT
 } rh_err;
 

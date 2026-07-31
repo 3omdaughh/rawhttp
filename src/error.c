@@ -16,6 +16,7 @@ static const char *rh_error_strings[RH_ERR_COUNT] =
     [RH_ERR_MEM]    = "[!] Memory allocation failed",
     [RH_ERR_INVAL]  = "[!] invalid argument",
     [RH_ERR_TIMEOUT]= "[!] operation timed out",   
+    [RH_ERR_LIMIT]  = "[!] exceeded configured safty limit",
 };
 
 const char *rh_strerror(rh_err err)

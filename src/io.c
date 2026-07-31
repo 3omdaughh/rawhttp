@@ -52,3 +52,24 @@ rh_err rh_recv_all(int fd, rh_buf *out)
         return RH_ERR_IO;
     }
 }
+
+rh_err rh_recv_some(rh_transport *t, rh_buf *out, int *out_eof)
+{
+    if (!t || !out || !out_eof) return RH_ERR_INVAL;
+    *out_eof = 0;
+
+    char chunk[RH_RECV_CHUNK];
+    size_t n = 0;
+    rh_err e = t->read(t, chunk, sizeof(chunk), &n);
+    if (e != RH_OK)
+    {
+        LOG_DEBUG("[!] recv_some: transport read failed after %zu bytes buffered", out->len);
+        return e;
+    }
+    if (n == 0)
+    {
+        *out_eof = 1;
+        return RH_OK;
+    }
+    return rh_buf_append(out, chunk, n);
+}
