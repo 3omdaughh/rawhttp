@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rawhttp_/internal.h"
 #include "rawhttp_/io.h"
 
 static char *dup_range(const char *s, size_t n)
@@ -35,7 +36,7 @@ static size_t find_crlfcrlf(const char *data, size_t len)
     return (size_t)-1;
 }
 
-static rh_err headers_push(rh_response *out, char *name, char *value)
+rh_err rh__headers_push(rh_response *out, char *name, char *value)
 {
     if (out->header_count == out->header_cap)
     {
@@ -66,7 +67,7 @@ static rh_err headers_push(rh_response *out, char *name, char *value)
  * means it will faithfully surface such bytes as a parse error if you
  * hand it something malformed rather than guessing at intent. */
 
-static rh_err parse_header_line(const char *line, size_t len, rh_response *out)
+rh_err rh__parse_header_line(const char *line, size_t len, rh_response *out)
 {
     size_t colon = (size_t)-1;
     for (size_t i = 0; i < len; i++)
@@ -101,7 +102,7 @@ static rh_err parse_header_line(const char *line, size_t len, rh_response *out)
         return RH_ERR_MEM;
     }
     
-    return heaader_push(out, name, value);
+    return rh__heaader_push(out, name, value);
 }
 
 static int parse_uint_digits(const char *s, size_t n, int *out_val)
@@ -187,7 +188,7 @@ static rh_err parse_head(const char *data, size_t len, rh_response *out)
                 break;
             }
         
-        e = parse_header_line(data+cursor, line_end-cursor, out);
+        e = rh__parse_header_line(data+cursor, line_end-cursor, out);
         if (e != RH_OK) return e;
         cursor = (line_end < len) ? line_end+2 : len;
     }
