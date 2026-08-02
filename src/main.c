@@ -13,6 +13,21 @@
 #include "rawhttp_/transport.h"
 #include "rawhttp_/url.h"
 
+static int header_equals_ci(const char *value, const char *want)
+{
+    if (!value) return 0;
+
+    size_t i = 0;
+    for (; value[i] && want[i]; i++)
+    {
+        char a = value[i], char b = want[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return value[i] == '\0' && want [i] == '\0';
+}
+
 signed main(int argc, char** argv)
 {
     if (argc != 2)
