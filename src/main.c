@@ -1,12 +1,16 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "rawhttp_/buf.h"
+#include "rawhttp_/chunked.h"
 #include "rawhttp_/error.h"
 #include "rawhttp_/io.h"
 #include "rawhttp_/request.h"
+#include "rawhttp_/response.h"
 #include "rawhttp_/socket.h"
+#include "rawhttp_/transport.h"
 #include "rawhttp_/url.h"
 
 signed main(int argc, char** argv)

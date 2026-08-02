@@ -43,8 +43,11 @@ rh_err rh_response_read_headers(rh_transport *t, rh_buf *raw, rh_response *out, 
 const char *rh_header_get(const rh_response *resp, const char *name);
 
 rh_err rh_response_read_body_length(rh_transport *t, rh_buf *raw, size_t header_end,
-                                    rh_response *out);
+                                    rh_response *out, size_t content_length);
 
+
+rh_err rh_response_read_body_until_close(rh_transport *t, rh_buf *raw, size_t header_end, 
+                                        rh_response *out);
 void rh_response_free(rh_response *resp);
 
 #endif /* RAWHTTP_RESPONSE_H */

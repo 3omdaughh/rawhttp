@@ -1,55 +1,52 @@
 #include "rawhttp_/io.h"
 
-#include <errno.h>
-#include <sys/socket.h>
-
 #define RH_RECV_CHUNK 4096
 
-rh_err rh_send_all(int fd, const void *data, size_t len)
+rh_err rh_send_all(rh_transport *t, const void *data, size_t len)
 {
-    if (!data && len > 0) return RH_ERR_INVAL;
+    if (!t || (!data && len > 0)) return RH_ERR_INVAL;
 
     const char *p = (const char *)data;
     size_t sent = 0;
 
     while (sent < len)
     {
-        ssize_t n = send(fd, p + sent, len - sent, MSG_NOSIGNAL);
-        if (n > 0)
+        size_t n = 0;
+        rh_err e = t->write(t, p+sent, len - sent, &n);
+        if (e != RH_OK)
         {
-            sent+=(size_t)n;
-            continue;
+            LOG_DEBUG("[!] send_all: transport write failed after %zu/%zu bytes", sent, len);
+            return e;
         }
-        if (n < 0 && errno == EINTR) continue; // ignore interruption and tryagain
 
-        /* n == 0 shouldn't happen for send(), and any other n < 0 is a
-         * real failure (peer reset, broken pipe caught via MSG_NOSIGNAL,
-         * etc). Either way, this send is unrecoverable. */
+        if (n == 0)
+        {
+            LOG_DEBUG("[~] send_all: transport wrote 0 bytes without error - aborting");
+            return RH_ERR_IO;
+        }
 
-        LOG_DEBUG("[!] send_all: failed after %zu/%zu bytes (errno=%d)", sent, len, errno);
-        return RH_ERR_IO;
+        sent += n;
     }
     return RH_OK;
 }
 
-rh_err rh_recv_all(int fd, rh_buf *out)
+rh_err rh_recv_all(rh_transport *t, rh_buf *out)
 {
-    if (!out) return RH_ERR_INVAL;
+    if (!t || !out) return RH_ERR_INVAL;
 
     char chunk[RH_RECV_CHUNK];
     for (;;)
     {
-        ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
-        if (n > 0)
+        size_t n = 0;
+        rh_err e = t->read(t, chunk, sizeof(chunk), &n);
+        if (e != RH_OK)
         {
-            rh_err e = rh_buf_append(out, chunk, (size_t)n);
-            if (e != RH_OK) return e;
-            continue;
+            LOG_DEBUG("[!] recv_all: transport read failed after %zu bytes buffered", out->len);
+            return 0;
         }
         if (n == 0) return RH_OK;
-        if (errno == EINTR) continue;
-        LOG_DEBUG("[!] recv_all: failed after %zu bytes buffered (errno=%d)", out->len, errno);
-        return RH_ERR_IO;
+        rh_err e2 = rh_buf_append(out, chunk, n);
+        if (e2 != RH_OK) return e2;
     }
 }
 

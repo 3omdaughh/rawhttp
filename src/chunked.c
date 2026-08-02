@@ -2,7 +2,7 @@
 #include "rawhttp_/internal.h"
 #include "rawhttp_/io.h"
 
-static rh_err ensure_line(int fd, rh_buf *raw, size_t line_start, size_t max_scan, size_t *line_end_out)
+static rh_err ensure_line(rh_transport *t, rh_buf *raw, size_t line_start, size_t max_scan, size_t *line_end_out)
 {
     for (;;)
     {
@@ -21,18 +21,18 @@ static rh_err ensure_line(int fd, rh_buf *raw, size_t line_start, size_t max_sca
         }
         if (raw->len - line_start > max_scan) return RH_ERR_LIMIT;
         int eof = 0;
-        rh_err e = rh_recv_some(fd, raw, &eof);
+        rh_err e = rh_recv_some(t, raw, &eof);
         if (e != RH_OK) return e;
         if (eof) return RH_ERR_PARSE;
     }
 }
 
-static rh_err ensure_bytes(int fd, rh_buf *raw, size_t need_total_len)
+static rh_err ensure_bytes(rh_transport *t, rh_buf *raw, size_t need_total_len)
 {
     while (raw->len < need_total_len)A
     {
         int eof = 0;
-        rh_err e = rh_recv_some(fd, raw, &eof);
+        rh_err e = rh_recv_some(t, raw, &eof);
         if (e != RH_OK) return e;
         if (eof) return RH_ERR_IO;
     }
@@ -47,7 +47,7 @@ static int hex_val(char c)
     return -1;
 }
 
-rh_err rh_chunked_decode(int fd, rh_buf *raw, size_t *cursor, rh_response *out)
+rh_err rh_chunked_decode(rh_transport *t, rh_buf *raw, size_t *cursor, rh_response *out)
 {
     if (!raw || !cursor || !out) return RH_ERR_INVAL;
 
@@ -62,7 +62,7 @@ rh_err rh_chunked_decode(int fd, rh_buf *raw, size_t *cursor, rh_response *out)
     {
         size_t line_start = *cursor;
         size_t line_end;
-        e = ensure_line(fd, raw, line_start, RH_MAX_CHUNK_LINE_BYTES, &line_end);
+        e = ensure_line(t, raw, line_start, RH_MAX_CHUNK_LINE_BYTES, &line_end);
         if(e != RH_OK) goto fail;
 
         size_t i = line_start;
@@ -117,7 +117,7 @@ rh_err rh_chunked_decode(int fd, rh_buf *raw, size_t *cursor, rh_response *out)
         }
 
         size_t need_end = data_start+chunk+2;
-        e = ensure_bytes(fd, raw, need_end);
+        e = ensure_bytes(t, raw, need_end);
         if (e != RH_OK) goto fail;
 
         if (raw->data[data_start+chunk_size] != '\r' || 
@@ -140,7 +140,7 @@ rh_err rh_chunked_decode(int fd, rh_buf *raw, size_t *cursor, rh_response *out)
     {
         size_t line_start = *cursor;
         size_t line_end;
-        e = ensure_line(fd, raw, line_start, RH_MAX_HEADER_BYTES, &line_end);
+        e = ensure_line(t, raw, line_start, RH_MAX_HEADER_BYTES, &line_end);
         if (e != RH_OK) goto fail;
 
         if (line_end == line_start)
