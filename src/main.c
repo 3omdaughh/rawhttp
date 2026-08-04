@@ -1,3 +1,4 @@
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,15 +29,34 @@ static int header_equals_ci(const char *value, const char *want)
     return value[i] == '\0' && want [i] == '\0';
 }
 
+static void print_usage(const char *argv0)
+{
+    fprintf(stderr, "[!] usage: %s [--insecure] http[s]://host[:port]/path\n", argv0);
+}
+
 signed main(int argc, char** argv)
 {
-    if (argc != 2)
+    signal(SIGPIPE, SIG_IGN);
+
+    int insecure = 0;
+    const char *url_str = NULL;
+
+    for (int i = 1; i < argc; i++)
     {
-        fprintf(stderr, "[!] usage: %s http://host[:port]/path\n", argv[0]);
-        return 1;
+        if (strcmp(argv[i], "--insecure") == 0) insecure = 1;
+        else if (!url_str) url_str = argv[i];
+        else 
+        {
+            print_usage(argv[0]);
+            return 1;
+        }
     }
 
-    const char *url_str = argv[1];
+    if (!url_str)
+    {
+        print_usage(argv[0]);
+        return 1;
+    }
 
     rh_url url;
     rh_err err = rh_url_parse(url_str, &url);
@@ -46,12 +66,7 @@ signed main(int argc, char** argv)
         return 1;
     }
 
-    if (strcmp(url.scheme, "https") == 0)
-    {
-        LOG_ERR("[!] https not supported yet");
-        rh_url_free(&url);
-        return 1;
-    }
+    int is_https = strcmp(url.scheme, "https") == 0;
 
     int fd = -1;
     err = rh_tcp_connect(url.host, url.port, &fd);
@@ -64,14 +79,32 @@ signed main(int argc, char** argv)
     LOG_INFO("[~] connected to %s:%u (fd=%d)", url.host, url.port, fd);
 
     rh_transport transport;
-    err = rh_transport_tcp_init(&transport, fd);
-    if (err != RH_OK)
+    
+    if (is_https)
     {
-        LOG_ERR("[!] failed to init transport: %s", rh_strerror(err));
-        close(fd);
-        rh_url_free(&url);
-        return 1;
+        if (insecure) LOG_WARN("[~] --insecure: skipping TLS certificate verification");
+        err = rh_transport_tls_init(&transport, fd, url.host, insecure);
+        if (err != RH_OK)
+        {
+            LOG_ERR("[!] TLS handshake with %s failed: %s", url.host, rh_strerror(err));
+            close(fd);
+            rh_url_free(&url);
+            return 1;
+        }
+        LOG_INFO("[~] TLS handshake with %s complete%s", url.host, insecure ? " (unverified)" : "");
     }
+    else 
+    {
+        err = rh_transport_tcp_init(&transport, fd);
+        if (err != RH_OK)
+        {
+            LOG_ERR("[!] failed to init transport: %s", rh_strerror(err));
+            close(fd);
+            rh_url_free(&url);
+            return 1;
+        }
+    }
+
     rh_buf req;
     err = rh_buf_init(&req, 0);
     if (err != RH_OK)

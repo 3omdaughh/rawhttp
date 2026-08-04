@@ -4,7 +4,7 @@ WARN    := -Wall -Wextra -Werror
 INCLUDE := -Iinclude
 
 # Extra libs get appended here as phases land: -lssl -lcrypto (T2.5), -lpthread (T4.2)
-LDLIBS  :=
+LDLIBS  := -lssl -lcrypto
 
 SRC_DIR   := src
 BUILD_DIR := build
