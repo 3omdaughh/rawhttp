@@ -29,7 +29,7 @@ static rh_err ensure_line(rh_transport *t, rh_buf *raw, size_t line_start, size_
 
 static rh_err ensure_bytes(rh_transport *t, rh_buf *raw, size_t need_total_len)
 {
-    while (raw->len < need_total_len)A
+    while (raw->len < need_total_len)
     {
         int eof = 0;
         rh_err e = rh_recv_some(t, raw, &eof);
@@ -98,9 +98,11 @@ rh_err rh_chunked_decode(rh_transport *t, rh_buf *raw, size_t *cursor, rh_respon
         if (chunk_size > RH_MAX_CHUNK_SIZE)
         {
              LOG_DEBUG("[!] chunked: chunk size %zu exceeds RH_MAX_CHUNK_SIZE", chunk_size);
-+            e = RH_ERR_LIMIT;
-+            goto fail;
+             e = RH_ERR_LIMIT;
+             goto fail;
         }
+
+        size_t data_start = line_end + 2; /* skip the size-line's CRLF */
 
         if (chunk_size == 0) 
         {
@@ -116,7 +118,7 @@ rh_err rh_chunked_decode(rh_transport *t, rh_buf *raw, size_t *cursor, rh_respon
             goto fail;
         }
 
-        size_t need_end = data_start+chunk+2;
+        size_t need_end = data_start+chunk_size+2;
         e = ensure_bytes(t, raw, need_end);
         if (e != RH_OK) goto fail;
 

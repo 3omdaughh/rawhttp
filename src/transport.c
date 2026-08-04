@@ -183,7 +183,7 @@ rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int 
      * */
 
     ctx->ssl = SSL_new(ctx->ssl_ctx);
-    if (!ctx_ssl)
+    if (!ctx->ssl)
     {
         LOG_DEBUG("[!] SSL_new failed");
         goto fail;
@@ -232,7 +232,7 @@ rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int 
     t->write    = tls_write;
     t->close    = tls_close;
     return RH_OK;
-}
+
 
 fail:
     if (ctx->ssl) SSL_free(ctx->ssl);
@@ -242,4 +242,4 @@ fail:
      * contract as rh_transport_tcp_init. caller still owns it
      */
     return RH_ERR_TLS;
-
+}

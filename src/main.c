@@ -21,7 +21,7 @@ static int header_equals_ci(const char *value, const char *want)
     size_t i = 0;
     for (; value[i] && want[i]; i++)
     {
-        char a = value[i], char b = want[i];
+        char a = value[i], b = want[i];
         if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
         if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
         if (a != b) return 0;
@@ -105,7 +105,7 @@ signed main(int argc, char** argv)
 
     rh_request_header *headers  = NULL;
     size_t header_count         = 0;
-    size_t header_cpa           = 0;
+    size_t header_cap           = 0;
 
     const void *body            = NULL;
     size_t body_len             = 0;
@@ -209,6 +209,8 @@ signed main(int argc, char** argv)
         return 1;
     }
 
+    const char *method = method_arg ? method_arg : (body_len > 0 ? "POST" : "GET");
+
     rh_url url;
     rh_err err = rh_url_parse(url_str, &url);
     if(err != RH_OK)
@@ -272,7 +274,7 @@ signed main(int argc, char** argv)
         goto cleanup_transport;
     }
 
-    err = rh_request_build_get(method, &url, headers, header_count, body, body_len, 1, &req);
+    err = rh_request_build(method, &url, headers, header_count, body, body_len, 1, &req);
     if (err != RH_OK)
     {
         LOG_ERR("[!] failed to build request: %s", rh_strerror(err));
@@ -341,7 +343,7 @@ signed main(int argc, char** argv)
 
     printf("HTTP/%d.%d %d %s\n", resp.http_major, resp.http_minor, resp.status, resp.reason);
     for (size_t i = 0; i < resp.header_count; i++)
-        printf("%s: %s\n", resp.headers[i].name. resp.header[i].value);
+        printf("%s: %s\n", resp.headers[i].name, resp.headers[i].value);
     printf("\n");
     fflush(stdout);
     /* raw dump - write() not printf(), so embedded NULs/binary bodies
@@ -349,7 +351,7 @@ signed main(int argc, char** argv)
 
     if (resp.body.len > 0)
     {
-        ssize_t written = write(STDOUT_FILENO. resp.body.data, resp.body.len);
+        ssize_t written = write(STDOUT_FILENO, resp.body.data, resp.body.len);
         if(written < 0 || (size_t)written != resp.body.len)
         LOG_ERR("[!] failed to write full body to stdout");
     }

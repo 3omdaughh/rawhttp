@@ -14,9 +14,9 @@ typedef void (*rh_transport_close_fn)(rh_transport *t);
 struct rh_transport
 {
     void *ctx; /* opaque - a plain fd wrapper or an SSL/SSL_CTX pair for TLS */ 
-    rh_transprot_read_fn;
-    rh_transprot_write_fn;
-    rh_transprot_close_fn; /* release ctx and whatever it owns (fd, SSL objects) */
+    rh_transport_read_fn    read;
+    rh_transport_write_fn   write;
+    rh_transport_close_fn   close; /* release ctx and whatever it owns (fd, SSL objects) */
 };
 
 /*

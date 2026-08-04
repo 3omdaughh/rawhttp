@@ -20,7 +20,7 @@ static int ci_eq(const char *a, const char *b)
 {
     while (*a && *b)
     {
-        if (tolower((unsigned char)*a != tolower(unsigned char)*b)) return 0;
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
         a++; b++;
     }
     return *a == '\0' && *b == '\0';
@@ -102,7 +102,7 @@ rh_err rh__parse_header_line(const char *line, size_t len, rh_response *out)
         return RH_ERR_MEM;
     }
     
-    return rh__heaader_push(out, name, value);
+    return rh__headers_push(out, name, value);
 }
 
 static int parse_uint_digits(const char *s, size_t n, int *out_val)
@@ -128,7 +128,7 @@ static rh_err parse_status_line(const char *line, size_t len, rh_response *out)
     }
 
     size_t i = 5;
-    size_t major_starat = i;
+    size_t major_start = i;
     while (i < len && isdigit((unsigned char)line[i])) i++;
 
     int major;
@@ -177,7 +177,7 @@ static rh_err parse_head(const char *data, size_t len, rh_response *out)
     rh_err e = parse_status_line(data, status_len, out);
     if (e != RH_OK) return e;
 
-    size_t cursor = (status < len)? status_len+2 : len;
+    size_t cursor = (status_len < len)? status_len+2 : len;
     while (cursor < len)
     {
         size_t line_end = len;
@@ -196,7 +196,7 @@ static rh_err parse_head(const char *data, size_t len, rh_response *out)
     return RH_OK;
 }
 
-rh_err rh_response_read_headers(rh_transport *t, rh_buf *raw, rh_responses *out, size_t *header_end)
+rh_err rh_response_read_headers(rh_transport *t, rh_buf *raw, rh_response *out, size_t *header_end)
 {
     if (!raw || !out || !header_end) return RH_ERR_INVAL;
     memset(out, 0, sizeof(*out));
@@ -274,7 +274,7 @@ rh_err rh_response_read_body_content_length(rh_transport *t, rh_buf *raw, size_t
         e = rh_buf_append(&out->body, raw->data + header_end, content_length);
         if (e != RH_OK) 
         {
-            rh_buf_free(out->body); // self-clean on failure, same contract as chuncked_decode
+            rh_buf_free(&out->body); // self-clean on failure, same contract as chuncked_decode
             return e;
         }
     }

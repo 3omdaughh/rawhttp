@@ -5,7 +5,7 @@
 
 #include "rawhttp_/buf.h"
 #include "rawhttp_/error.h"
-#incldue "rawhttp_/transport.h"
+#include "rawhttp_/transport.h"
 
 /*
  * loops t->write() until every byte in `data`/`len` is on the wire,
