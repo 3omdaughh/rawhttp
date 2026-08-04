@@ -196,7 +196,7 @@ static rh_err parse_head(const char *data, size_t len, rh_response *out)
     return RH_OK;
 }
 
-rh_err rh_response_read_headers(int fd, rh_buf *raw, rh_responses *out, size_t *header_end)
+rh_err rh_response_read_headers(rh_transport *t, rh_buf *raw, rh_responses *out, size_t *header_end)
 {
     if (!raw || !out || !header_end) return RH_ERR_INVAL;
     memset(out, 0, sizeof(*out));
@@ -224,7 +224,7 @@ rh_err rh_response_read_headers(int fd, rh_buf *raw, rh_responses *out, size_t *
         }
 
         int eof = 0;
-        rh_err e = rh_recv_some(fd, raw, &eof);
+        rh_err e = rh_recv_some(t, raw, &eof);
         if (e != RH_OK) return e;
         if (eof) 
         {
@@ -242,7 +242,7 @@ const char *rh_header_get(const rh_response *resp, const char *name)
     return NULL;
 }
 
-rh_err rh_response_read_body_content_length(int fd, rh_buf *raw, size_t header_end,
+rh_err rh_response_read_body_content_length(rh_transport *t, rh_buf *raw, size_t header_end,
                                              rh_response *out, size_t content_length) 
 {
     if (!raw || !out) return RH_ERR_INVAL;
@@ -257,7 +257,7 @@ rh_err rh_response_read_body_content_length(int fd, rh_buf *raw, size_t header_e
     while (raw->len < target) 
     {
         int eof = 0;
-        rh_err e = rh_recv_some(fd, raw, &eof);
+        rh_err e = rh_recv_some(t, raw, &eof);
         if (e != RH_OK) return e;
         if (eof) 
         {
@@ -272,19 +272,23 @@ rh_err rh_response_read_body_content_length(int fd, rh_buf *raw, size_t header_e
     if (content_length > 0) 
     {
         e = rh_buf_append(&out->body, raw->data + header_end, content_length);
-        if (e != RH_OK) return e;
+        if (e != RH_OK) 
+        {
+            rh_buf_free(out->body); // self-clean on failure, same contract as chuncked_decode
+            return e;
+        }
     }
     return RH_OK;
 }
 
-rh_err rh_response_read_body_until_close(int fd, rh_buf *raw, size_t header_end,
+rh_err rh_response_read_body_until_close(rh_transport *t, rh_buf *raw, size_t header_end,
                                           rh_response *out) {
     if (!raw || !out) return RH_ERR_INVAL;
 
     for (;;) 
     {
         int eof = 0;
-        rh_err e = rh_recv_some(fd, raw, &eof);
+        rh_err e = rh_recv_some(t, raw, &eof);
         if (e != RH_OK) return e;
         if (eof) break;
         if (raw->len - header_end > RH_MAX_BODY_BYTES) 
@@ -300,7 +304,11 @@ rh_err rh_response_read_body_until_close(int fd, rh_buf *raw, size_t header_end,
     if (body_len > 0) 
     {
         e = rh_buf_append(&out->body, raw->data + header_end, body_len);
-        if (e != RH_OK) return e;
+        if (e != RH_OK) 
+        {
+            rh_buf_free(&out->body);
+            return e;
+        }
     }
     return RH_OK;
 }
