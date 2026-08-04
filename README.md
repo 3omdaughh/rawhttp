@@ -5,16 +5,19 @@ HTTP request smuggling / desync research. No libcurl, no normalization —
 `rawhttp` writes exactly the bytes you give it, which is what makes CL.TE,
 TE.CL, and CL.TE desync payloads possible in the first place.
 
-Status: **Phase 1 (walking skeleton) complete.** Real client (Phase 2) next.
+Status: **Phase 2 (real client) complete.** Pentest weapon (Phase 3) next.
 
 ```
-$ ./rawhttp http://example.com/
+$ ./rawhttp -X POST -H 'Content-Type: application/json' -d '{"x":1}' https://example.com/api
 HTTP/1.1 200 OK
-Content-Type: text/html; charset=UTF-8
+Content-Type: application/json
 ...
 ```
 
 ## Build
+
+Requires OpenSSL development headers (`libssl-dev` on Debian/Ubuntu;
+already present via the base `openssl` package on Arch).
 
 ```sh
 make            # release build -> ./rawhttp

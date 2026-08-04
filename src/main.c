@@ -31,23 +31,172 @@ static int header_equals_ci(const char *value, const char *want)
 
 static void print_usage(const char *argv0)
 {
-    fprintf(stderr, "[!] usage: %s [--insecure] http[s]://host[:port]/path\n", argv0);
+    fprintf(stderr, 
+            "[~] usage: %s [options] http[s]://host[:port]/path\n"
+            "  -X,  --method METHOD     HTTP method (default: GET, or POST if -d/--data-file given)\n"
+            "  -H   'Name: Value'       add a request header (repeatable)\n"
+            "  -d,  --data DATA         request body, literal string\n"
+            "       --data-file FILE    request body, read verbatim from FILE\n"
+            "       --insecure          skip TLS certificate verification\n",
+            argv0);
+}
+
+/* Splite "Name: value" in place (mutating argv - fine for a short-lived CLI process and
+ * standard practice for argv parsing). Trims leading OWS from the value; the name is used
+ * as-is, right up to the colon.
+ * */
+
+static rh_err parse_header_flag(char *arg, rh_request_header *out)
+{
+    char *colon = strchr(arg, ':');
+    if (!colon) return RH_ERR_PARSE;
+    *colon = '\0';
+    char *val = colon + 1;
+    while (*val == ' ' || *val == '\t') {val++;}
+    out->name     = arg;
+    out->value    = val;
+    return RH_OK;
+}
+
+/* Reads a whole file into `out` verbatim (binary-safe - a request body
+ * for smuggling/fuzzing purpose may not be text)
+ * */
+
+static rh_err read_file_bytes(const char *path, rh_buf *out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return RH_ERR_IO;
+
+    rh_err e = rh_buf_init(out, 0);
+    if (e != RH_OK)
+    {
+        fclose(f);
+        return e;
+    }
+    char chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
+    {
+        e = rh_buf_append(out, chunk, n);
+        if (e != RH_OK)
+        {
+            fclose(f);
+            rh_buf_free(out);
+            return e;
+        }
+    }
+    if (ferror(f))
+    {
+        fclose(f);
+        rh_buf_free(out);
+        return RH_ERR_IO;
+    }
+    fclose(f);
+    return RH_OK;
 }
 
 signed main(int argc, char** argv)
 {
     signal(SIGPIPE, SIG_IGN);
 
-    int insecure = 0;
-    const char *url_str = NULL;
+    int insecure                = 0;
+    const char *url_str         = NULL;
+    const char *method_arg      = NULL;
+
+    rh_request_header *headers  = NULL;
+    size_t header_count         = 0;
+    size_t header_cpa           = 0;
+
+    const void *body            = NULL;
+    size_t body_len             = 0;
+    rh_buf data_file_buf;
+    int have_data_file_buf      = 0;
 
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--insecure") == 0) insecure = 1;
+        else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            method_arg = argv[++i];
+        }
+        else if (strcmp(argv[i], "-H") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            rh_request_header h;
+            if (parse_header_flag(argv[++i], &h) != RH_OK)
+            {
+                fprintf(stderr, "[!] error: -H value must be 'Name: Value', got '%s'\n", argv[i]);
+                free(headers);
+                return 1;
+            }
+            if (header_count == header_cap)
+            {
+                size_t new_cap = header_cap ? header_cap*2 : 4;
+                rh_request_header *nh = realloc(headers, new_cap * sizeof(*headers));
+                if (!nh)
+                {
+                    fprintf(stderr, "[!] error: out of memory\n");
+                    free(headers);
+                    return 1;
+                }
+                headers = nh;
+                header_cap = new_cap;
+            }
+            headers[header_count++] = h;
+        }
+        else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--data") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            if (have_data_file_buf)
+            {
+                rh_buf_free(&data_file_buf);
+                have_data_file_buf = 0;
+            }
+            body = argv[++i];
+            body_len = strlen(argv[i]);
+        }
+        else if (strcmp(argv[i], "--data-file") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            i++;
+            rh_err fe = read_file_bytes(argv[i], &data_file_buf);
+            if (fe != RH_OK)
+            {
+                fprintf(stderr, "[!] error: failed to read --data-file '%s': %s\n", argv[i], rh_strerror(fe));
+                free(headers);
+                return 1;
+            }
+            have_data_file_buf = 1;
+            body = data_file_buf.data;
+            body_len = data_file_buf.len;
+        }
         else if (!url_str) url_str = argv[i];
         else 
         {
             print_usage(argv[0]);
+            free(headers);
+            if (have_data_file_buf) rh_buf_free(&data_file_buf);
             return 1;
         }
     }
@@ -55,6 +204,8 @@ signed main(int argc, char** argv)
     if (!url_str)
     {
         print_usage(argv[0]);
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return 1;
     }
 
@@ -63,6 +214,8 @@ signed main(int argc, char** argv)
     if(err != RH_OK)
     {
         LOG_ERR("[!] failed to parse '%s': %s", url_str, rh_strerror(err));
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return 1;
     }
 
@@ -74,6 +227,8 @@ signed main(int argc, char** argv)
     {
         LOG_ERR("[!] failed to connect to %s:%u: %s", url.host, url.port, rh_strerror(err));
         rh_url_free(&url);
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return 1;
     }
     LOG_INFO("[~] connected to %s:%u (fd=%d)", url.host, url.port, fd);
@@ -89,6 +244,8 @@ signed main(int argc, char** argv)
             LOG_ERR("[!] TLS handshake with %s failed: %s", url.host, rh_strerror(err));
             close(fd);
             rh_url_free(&url);
+            free(headers);
+            if (have_data_file_buf) rh_buf_free(&data_file_buf);
             return 1;
         }
         LOG_INFO("[~] TLS handshake with %s complete%s", url.host, insecure ? " (unverified)" : "");
@@ -101,6 +258,8 @@ signed main(int argc, char** argv)
             LOG_ERR("[!] failed to init transport: %s", rh_strerror(err));
             close(fd);
             rh_url_free(&url);
+            free(headers);
+            if (have_data_file_buf) rh_buf_free(&data_file_buf);
             return 1;
         }
     }
@@ -113,7 +272,7 @@ signed main(int argc, char** argv)
         goto cleanup_transport;
     }
 
-    err = rh_request_build_get(&url, &req);
+    err = rh_request_build_get(method, &url, headers, header_count, body, body_len, 1, &req);
     if (err != RH_OK)
     {
         LOG_ERR("[!] failed to build request: %s", rh_strerror(err));
@@ -205,6 +364,8 @@ cleanup_req:
 cleanup_transport:
     transport.close(&transport); // owns fd, closes it 
     rh_url_free(&url);
+    free(headers);
+    if (have_data_file_buf) rh_buf_free(&data_file_buf);
 
     return err == RH_OK ? 0 : 1;
 } 
