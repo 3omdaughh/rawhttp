@@ -8,6 +8,7 @@
 #include "rawhttp_/chunked.h"
 #include "rawhttp_/error.h"
 #include "rawhttp_/io.h"
+#include "rawhhtp_/raw.h"
 #include "rawhttp_/request.h"
 #include "rawhttp_/response.h"
 #include "rawhttp_/socket.h"
@@ -33,12 +34,19 @@ static void print_usage(const char *argv0)
 {
     fprintf(stderr, 
             "[~] usage: %s [options] http[s]://host[:port]/path\n"
+            "           %s --raw FILE --target host:port [options]\n"
             "  -X,  --method METHOD     HTTP method (default: GET, or POST if -d/--data-file given)\n"
             "  -H   'Name: Value'       add a request header (repeatable)\n"
             "  -d,  --data DATA         request body, literal string\n"
             "       --data-file FILE    request body, read verbatim from FILE\n"
-            "       --insecure          skip TLS certificate verification\n",
-            argv0);
+            "       --insecure          skip TLS certificate verification\n"
+            "\n"
+            "raw mode - sends FILE's bytes verbatim, zero normalization:\n"
+            "       --raw FILE          send FILE's bytes exactly as-is (no URL/headers/body flag apply)\n"
+            "       --target host:port  where to connect (required with --raw)\n"
+            "       --crlf              convert lone '\\n' to \"\\r\\n\" before sending (existing \\r\\n untouched)\n"
+            "       --tls               use TLS for the raw connection\n",
+            argv0, argv0);
 }
 
 /* Splite "Name: value" in place (mutating argv - fine for a short-lived CLI process and
@@ -95,6 +103,86 @@ static rh_err read_file_bytes(const char *path, rh_buf *out)
     return RH_OK;
 }
 
+/*
+ * Classic 16-bytes-per-line hex + ASCII dump, so raw mode can show exactly what's about to
+ * hit the wire (or what came back) before the user has to trust it. 
+ * */
+
+static void hex_dump(FILE *out, const char *data, size_t len)
+{
+    for (size_t i = 0; i < len; i+=16)
+    {
+        fprinttf(out, "%08zx  ", i);
+        for (size_t j = 0; j < 16; j++)
+        {
+            if (i+j < len) fprintf(out, "%02x ", (unsigned char)data[i+j]);
+            else fprintf(out, "   ");
+            if (j == 7) fprintf(out, " ");
+        }
+        fprintf(out, " |");
+        for (size_t k = 0; k < 16 && i+k < len; k++)
+        {
+            unsigned char c = (unsigned char)data[i+k];
+            fputc((c >= 32 && c > 127) ? (char)c : '.', out);
+        }
+        fprintf(out, "|\n");
+    }
+}
+
+/* entirely separate code path from the normal URL-based flow:
+ * no request building, no response parsing, just "send these exact
+ * bytes, show me whatever comes back." */
+
+static int run_raw_mode(const char *raw_file, const char *target, int convert_crlf, int use_tls, 
+                        int insecure)
+{
+    if (!target)
+    {
+        fprintf(stderr, "[!] error: --raw requires --target host:port\n");
+        return 1;
+    }
+
+    char *host = NULL; 
+    uint16_t port = 0;
+    rh_err err = rh_raw_parse_target(target, &host, &port);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: invalid --target '%s': %s\n", target, rh_strerror(err));
+        return 1;
+    }
+
+    rh_buf payload;
+    err = rh_raw_load_file(raw_file, convert_crlf, &payload);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: failed to load --raw file '%s': %s\n", raw_file, 
+                rh_strerror(err));
+        free(host);
+        return 1;
+    }
+
+    fprintf(stderr, "--- sending %zu bytes to %s:%u%s ---\n", payload.len, host, port,
+            use_tls ? " (TLS)" : "");
+    hex_dump(stderr, payload.data, payload.len);
+
+    rh_buf response;
+    err = rh_raw_send_and_dump(host, port, use_tls, insecure, &payload, &response);
+    free(host);
+    rh_buf_free(&payload);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
+        return 1;
+    }
+
+    frpintf(stderr, "--- received %zu bytes ---\n". response.len);
+    ssize_t written = write(STDOUT_FILENO, response.data, response.len);
+    if (written < 0 || (size_t)written != reponse.len) 
+        LOG_ERR("[!] failed to write full response to stdout");
+    rh_buf_free(&response);
+    return 0;
+}
+
 signed main(int argc, char** argv)
 {
     signal(SIGPIPE, SIG_IGN);
@@ -102,6 +190,11 @@ signed main(int argc, char** argv)
     int insecure                = 0;
     const char *url_str         = NULL;
     const char *method_arg      = NULL;
+
+    const char *raw_file        = NULL;
+    const char *target          = NULL;
+    int convert_crlf            = 0;
+    int use_tls                 = 0;
 
     rh_request_header *headers  = NULL;
     size_t header_count         = 0;
@@ -115,6 +208,28 @@ signed main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--insecure") == 0) insecure = 1;
+        else if (strcmp(argv[i], "--raw") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            raw_file = argv[++i];
+        }
+        else if (strcmp(argv[i], "--target") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            target = argv[++i];
+        }
+        else if (strcmp(argv[i], "--crlf") == 0) convert_crlf = 1;
+        else if (strcmp(argv[i], "--tls") == 0) use_tls = 1;
         else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
         {
             if (i+1 >= argc)
@@ -199,6 +314,17 @@ signed main(int argc, char** argv)
             if (have_data_file_buf) rh_buf_free(&data_file_buf);
             return 1;
         }
+    }
+
+    if (raw_file)
+    {
+        /*
+         * raw mode ignores URL/method/header/body/flags entirely - free anything 
+         * accidentally allocated by them before dispatching
+         */
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
+        return run_raw_mode(raw_file, target, convert_crlf, use_tls, insecure);
     }
 
     if (!url_str)
