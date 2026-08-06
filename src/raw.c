@@ -134,6 +134,14 @@ rh_err rh_raw_load_file(const char *path, int convert_crlf, rh_buf *out)
     return RH_OK;
 }
 
+/*
+ * How long to wait for more data before deciding the peer is done, on a connection
+ * that doesn't close on its own (HTTP/1.1 keep-alive is the default, not an edge case).
+ * This will likely become a --timeout flag in near future; for now it's a fixed, 
+ * generous values that comfortably covers a normal LAN/internet round trip
+ * */
+#define RH_RAW_IDLE_TIMEOUT_MS 2000
+
 rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int insecure, 
                             const rh_buf *payload, rh_buf *response_out)
 {
@@ -177,7 +185,7 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
         return e;
     }
 
-    e = rh_recv_all(&t, response_out);
+    e = rh_recv_until_idle(&t, response_out, RH_RAW_IDLE_TIMEOUT_MS);
     t.close(&t);
     if (e != RH_OK)
     {

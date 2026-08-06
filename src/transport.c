@@ -58,6 +58,12 @@ static void tcp_close(rh_transport *t)
     t->ctx = NULL;
 }
 
+static int tcp_get_fd(rh_transport *t)
+{
+    rh_tcp_ctx *ctx = (rh_tcp_ctx *)t->ctx;
+    return ctx ? ctx->fd : -1;
+}
+
 rh_err rh_transport_tcp_init(rh_transport *t, int fd)
 {
     if (!t || fd < 0) return RH_ERR_INVAL;
@@ -69,6 +75,7 @@ rh_err rh_transport_tcp_init(rh_transport *t, int fd)
     t->read     = tcp_read;
     t->write    = tcp_write;
     t->close    = tcp_close;
+    t->get_fd   = tcp_get_fd;
     return RH_OK;
 }
 
@@ -151,6 +158,12 @@ static void tls_close(rh_transport *t)
     t->ctx = NULL;
 }
 
+static int tls_get_fd(rh_transport *t)
+{
+    rh_tls_ctx *ctx = (rh_tls_ctx *)t->ctx;
+    return ctx ? ctx->fd : -1;
+}
+
 rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int insecure)
 {
     if (!t || fd < 0 || !hostname) return RH_ERR_INVAL;
@@ -231,6 +244,7 @@ rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int 
     t->read     = tls_read;
     t->write    = tls_write;
     t->close    = tls_close;
+    t->get_fd   = tls_get_fd;
     return RH_OK;
 
 

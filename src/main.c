@@ -193,27 +193,101 @@ static int run_raw_mode(const char *raw_file, const char *target, int convert_cr
     return 0;
 }
 
+/*
+ * builds a CL.TE/TE.CL/CL.CL payload then sends it exactly like raw mode does
+ * (same connect/sned/dump-response infrastructure - the only difference from
+ * --raw is where the bytes come from).
+ * */
+
+static int run_smuggle_mode(const char *technique_name, const char *target,
+                    const char *path, const char *smuggle_host, const char *smuggled,
+                    long cl1, long cl2, int use_tls, int insecure)
+{
+    if (!target)
+    {
+        fprintf(stderr, "[!] error: --smuggle requires --target host:port\n");
+        return 1;
+    }
+
+    rh_smuggle_technique technique;
+    rh_err err = rh_smuggle_parse_technique(technique_name, &technique);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: unknown --smuggle technique '%s' (want cl.te, te.cl, cl.cl)\n", technique_name);
+        return 1;
+    }
+
+    char *host                  = NULL;
+    uint16_t port               = 0;
+    err                         = rh_raw_parse_target(target, &host, &port);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: invalid --target '%s': %s\n", target, rh_strerror(err));
+        return 1;
+    }
+
+    const char *host_header = smuggle_host ? smuggle_host : host;
+
+    rh_buf payload;
+    err = rh_smuggle_build(technique, host_header, path, smuggled, cl1, cl2, &payload);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] failed to build smuggling payload: %s\n", rh_strerror(err));
+        free(host);
+        return 1;
+    }
+
+    fprintf(stderr, "--- %s payload, sending %zu bytes to %s:%u%s ---\n", technique_name,
+            payload.len, host, port, use_tls ? " (TLS)" : "");
+    hex_dump(stderr, payload.data, payload_len);
+
+    rh_buf response;
+    err = rh_raw_send_and_dump(host, port, use_tls, insecure, &payload, &response);
+    free(host);
+    rh_buf_free(&payload);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
+        return 1;
+    }
+
+    fprintf(stderr, "--- received %zu bytes ---\n", response.len);
+    ssize_t written = write(STDOUT_FILENO, response.data, response.len);
+    if (written < 0 || (size_t)written != response.len)
+        LOG_ERR("[!] failed to write full response to stdout");
+
+    rh_buf_free(&response);
+    return 0;
+}
+
 signed main(int argc, char** argv)
 {
     signal(SIGPIPE, SIG_IGN);
 
-    int insecure                = 0;
-    const char *url_str         = NULL;
-    const char *method_arg      = NULL;
+    int insecure                        = 0;
+    const char *url_str                 = NULL;
+    const char *method_arg              = NULL;
 
-    const char *raw_file        = NULL;
-    const char *target          = NULL;
-    int convert_crlf            = 0;
-    int use_tls                 = 0;
+    const char *raw_file                = NULL;
+    const char *target                  = NULL;
+    int convert_crlf                    = 0;
+    int use_tls                         = 0;
 
-    rh_request_header *headers  = NULL;
-    size_t header_count         = 0;
-    size_t header_cap           = 0;
+    const char *smuggle_technique       = NULL;
+    const char *smuggle_parh            = "/";
+    const char *smuggle_host            = NULL;
+    const char *smuggled                = "SMUGGLED";
+    long cl1                            =-1;
+    long cl2                            =-1;
 
-    const void *body            = NULL;
-    size_t body_len             = 0;
+    rh_request_header *headers          = NULL;
+    size_t header_count                 = 0;
+    size_t header_cap                   = 0;
+
+    const void *body                    = NULL;
+    size_t body_len                     = 0;
     rh_buf data_file_buf;
-    int have_data_file_buf      = 0;
+    int have_data_file_buf              = 0;
 
     for (int i = 1; i < argc; i++)
     {
@@ -240,6 +314,66 @@ signed main(int argc, char** argv)
         }
         else if (strcmp(argv[i], "--crlf") == 0) convert_crlf = 1;
         else if (strcmp(argv[i], "--tls") == 0) use_tls = 1;
+        else if (strcmp(argv[i], "--smuggle") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv0);
+                free(headers);
+                return 1;
+            }
+            smuggle_technique = argv[++i];
+        }
+        else if (strcmp(argv[i], "--path") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            smuggle_path = argv[++i];
+        }
+        else if (strcmp(argv[i], "--smuggle-host") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            smuggle_host = argv[++i];
+        }
+        else if (strcmp(argv[i], "--smuggled") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            smuggled = argv[++i];
+        }
+        else if (strcmp(argv[i], "--cl1") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            cl1 = strtol(argv[++i], NULL, 10);
+        }
+        else if (strcmp(argv[i], "--cl2") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            cl2 = strtol(argv[++i], NULL, 10);
+        }
         else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
         {
             if (i+1 >= argc)
@@ -326,6 +460,14 @@ signed main(int argc, char** argv)
         }
     }
 
+    if (raw_file && smuggle_technique)
+    {
+        fprintf(stderr, "[!] error: --raw and --smuggle are mutually exclusive\n");
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
+        return 1;
+    }
+
     if (raw_file)
     {
         /*
@@ -335,6 +477,14 @@ signed main(int argc, char** argv)
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return run_raw_mode(raw_file, target, convert_crlf, use_tls, insecure);
+    }
+
+    if (smuggle_technique)
+    {
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
+        return run_smuggle_mode(smuggle_target, target, smuggle_path, smuggle_host,
+                smuggled, cl1, cl2, use_tls, insecure);
     }
 
     if (!url_str)
