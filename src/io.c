@@ -1,5 +1,8 @@
 #include "rawhttp_/io.h"
 
+#include <errno.h>
+#include <poll.h>
+
 #define RH_RECV_CHUNK 4096
 
 rh_err rh_send_all(rh_transport *t, const void *data, size_t len)
@@ -69,4 +72,40 @@ rh_err rh_recv_some(rh_transport *t, rh_buf *out, int *out_eof)
         return RH_OK;
     }
     return rh_buf_append(out, chunk, n);
+}
+
+rh_err rh_recv_until_idle(rh_transport *t, rh_buf *out, int idle_timeout_ms)
+{
+    if (!t || !out) return RH_ERR_INVAL;
+
+    int fd = t->get_fd ? t->get_fd(t) : -1;
+    if (fd < 0)
+    {
+        /*
+         * no fd accessor available - fall back to a single read attempt
+         * rather than failing outright (shoundn't happen for either of
+         * this project's own transports, both of which set get_fd)
+         * */
+        int eof = 0;
+        return rh_recv_some(t, out, &eof);
+    }
+
+    for (;;)
+    {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
+        int pr = poll(&pfd, 1, idle_timeout_ms);
+        if (pr < 0)
+        {
+            if (errno == EINTR) continue;
+            LOG_DEBUG("[!] recv_until_idle: poll() failed");
+            return RH_ERR_IO;
+        }
+        if (pr == 0) return RH_OK; /* idle timeout elapsed - nothing more coming */
+
+        int eof = 0;
+        rh_err e = rh_recv_some(t, out, &eof);
+        if (e != RH_OK) return e;
+        if (eof) return RH_OK; /* peer closed - clean end */
+        /* got some data - loop and poll again in case more is coming */
+    }
 }

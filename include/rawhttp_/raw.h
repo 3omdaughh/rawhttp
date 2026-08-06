@@ -27,10 +27,10 @@ rh_err rh_raw_load_file(const char *path, int convert_crlf, rh_buf *out);
 
 /*
  * Connects to host:port (TLS if use_tls is set, with the same insecure/verification 
- * semantics as the rest of the client), writes `payload` verbatim via rh_send_all, then
- * reads until the peer closes (or an error/timeout) and returns everything received in 
- * `response_out` (must be rh_buf_init'd by the caller... actually this function calls 
- * rh_buf_init on it - see .c for the exact contract).
+ * semantics as the rest of the client), writes `payload` verbatim via rh_send_all, then reads whatever comes back until
+ * either the peer closes OR a short idle gap with no new data (see rh_recv_until_idle) - NOT a strict wait-for-EOF, since that
+ * would hang forever against any server that keeps the connection open after responding (HTTP/1.1 keep-alive is the default).
+ * Returns everything received in `response_out` (this function calls rh_buf_init on it).
  *
  * Deliberately does NOT attempt to parse the response as HTTP - a malformed or multi-response
  * byte stream (e.g. a smuggling payload where two requests were concatenated into `paylaod`)

@@ -10,6 +10,11 @@ typedef struct rh_transport rh_transport;
 typedef rh_err (*rh_transport_read_fn)(rh_transport *t, void *buf, size_t len, size_t *out_n);
 typedef rh_err (*rh_transport_write_fn)(rh_transport *t, const void *buf, size_t len, size_t *out_n);
 typedef void (*rh_transport_close_fn)(rh_transport *t);
+/*
+ * Returns the underlying fd for poll()/select() - works for both plain TCP and TLS (TLS is layered on top of the same fd; a readable fd is
+ * a good-enough signal for idle-detection purpose even though it doesn't guarantree a complete decrypted record is ready).
+ * */
+typedef int (*rh_transport_get_fd_fn)(rh_transport *t);
 
 struct rh_transport
 {
@@ -17,6 +22,7 @@ struct rh_transport
     rh_transport_read_fn    read;
     rh_transport_write_fn   write;
     rh_transport_close_fn   close; /* release ctx and whatever it owns (fd, SSL objects) */
+    rh_transport_get_fd_fn  get_fd;
 };
 
 /*

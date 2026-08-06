@@ -35,5 +35,19 @@ rh_err rh_recv_all(rh_transport *t, rh_buf *out);
  */
 rh_err rh_recv_some(rh_transport *t, rh_buf *out, int *out_eof);
 
+/*
+ * Reads into `out` until EITHER the peer closes (clean EOF) OR no new
+ * data arrives within `idle_timeout_ms` of the last read - whichever
+ * comes first. Both outcomes return RH_OK; there's no way for the
+ * caller to distinguish "peer closed" from "went quiet" from the
+ * return value alone, which is fine for this function's purpose (raw/
+ * smuggle mode dumping whatever came back).
+ *
+ * This exists because "read until EOF" (rh_recv_all) hangs forever
+ * against any server that keeps the connection open after responding -
+ * which is the HTTP/1.1 default (keep-alive), not an edge case. Uses
+ * transport->get_fd() + poll() to detect the idle gap.
+ */
+rh_err rh_recv_until_idle(rh_transport *t, rh_buf *out, int idle_timeout_ms);
 
 #endif /* RAWHTTP_IO_H */

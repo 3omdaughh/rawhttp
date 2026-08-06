@@ -11,6 +11,7 @@
 #include "rawhhtp_/raw.h"
 #include "rawhttp_/request.h"
 #include "rawhttp_/response.h"
+#include "rawhttp_/smuggle.h"
 #include "rawhttp_/socket.h"
 #include "rawhttp_/transport.h"
 #include "rawhttp_/url.h"
@@ -45,7 +46,16 @@ static void print_usage(const char *argv0)
             "       --raw FILE          send FILE's bytes exactly as-is (no URL/headers/body flag apply)\n"
             "       --target host:port  where to connect (required with --raw)\n"
             "       --crlf              convert lone '\\n' to \"\\r\\n\" before sending (existing \\r\\n untouched)\n"
-            "       --tls               use TLS for the raw connection\n",
+            "       --tls               use TLS for the raw connection\n"
+            "\n"
+            "smuggling helper - generates and sends a CL.TE/TE.CL/CL.CL payload:\n"
+            "       --smuggle TECH      cl.te | te.cl | cl.cl\n"
+            "       --target host:port  where to connect (required with --smuggle\n)"
+            "       --path PATH         request path (default: /)\n"
+            "       --smuggle-host H    Host header value (default: the --target host)\n"
+            "       --smuggled TEST     bytes left dangling for the desynced side (default: SMUGGLED)\n"
+            "       --cl1 N             override the first Content-Length value\n"
+            "       --cl2 N             override CL.CL's second Content-Length value\n",
             argv0, argv0);
 }
 
