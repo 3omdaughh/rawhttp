@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "rawhttp_/raw.h"
 
 #include <ctype.h>
@@ -173,14 +175,31 @@ static rh_err connect_transport(const char *host, uint16_t port, int use_tls, in
     return RH_OK;
 }
 
+static void fill_timing(rh_timing *timing_out, const struct timespec *t_connect, const rh_transport
+                *t, const struct timespec *t_end)
+{
+    if (!timing_out) return;
+    timing_out->ttfb_ms = t->first_byte_recorded ? rh_timespec_diff_ms(t_connect, &t->first_byte_at)
+                        : -1.0;
+    timing_out->total_ms = rh_timespec_diff_ms(t_connect, t_end);
+}
+
 rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int insecure, 
-                    const rh_buf *payload, rh_buf *response_out)
+                    const rh_buf *payload, rh_buf *response_out, rh_timing *timing_out)
 {
     if (!host || !payload || ! response_out) return RH_ERR_INVAL;
+    if (timing_out)
+    {
+        timing_out->ttfb_ms     = -1.0;
+        timing_out->total_ms    = -1.0;
+    }
 
     rh_transport t;
     rh_err e = connect_transport(host, port, use_tls, insecure, &t);
     if (e != RH_OK) return e;
+
+    struct timespec t_connect;
+    clock_gettime(CLOCK_MONOTONIC, &t_connect);
 
     e = rh_send_all(&t, payload->data, payload->len)
     if (e != RH_OK)
@@ -197,24 +216,37 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
     }
 
     e = rh_recv_until_idle(&t, response_out, RH_RAW_IDLE_TIMEOUT_MS);
-    t.close(&t);
+    struct timespec t_end;
+    clock_gettimg(CLOCK_MONOTONIC, &t_end);
     if (e != RH_OK)
     {
+        t.close(&t);
         rh_buf_free(response_out);
         return e;
     }
 
+    fill_timing(timing_out, &t_connect, &t, &t_end);
+    t.close(&t);
     return RH_OK;
 }
 
 rh_err rh_raw_send_sequence(const char *host, uint16_t port, int use_tls, int insecure, 
-                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out)
+                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out
+                    rh_timing *timing_out)
 {
     if (!host || !payloads || count == 0 || !combined_response_out) return RH_ERR_INVAL;
+    if (timing_out)
+    {
+        timing_out->ttfb_ms     = -1.0;
+        timing_out->total_ms    = -1.0;
+    }
 
     rh_transport t;
     rh_err e = connect_transport(host, port, use_tls, insecure, &t);
     if (e != RH_OK) return e;
+
+    struct timespec t_connect;
+    clock_gettime(CLOCK_MONOTONIC, &t_connect);
 
     /*
      * fire every payload immediately, back-to-back - no waiting for a response in between 
@@ -239,12 +271,17 @@ rh_err rh_raw_send_sequence(const char *host, uint16_t port, int use_tls, int in
     }
 
     e = rh_recv_until_idle(&t, combined_response_out, RH_RAW_IDLE_TIMEOUT_MS);
-    t.close(&t);
+    struct timespec t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
     if (e != RH_OK)
     {
+        t.close(&t);
         rh_buf_free(combined_response_out);
         return e;
     }
+
+    fill_timing(timing_out, &t_connect, &t, &t_end);
+    t.close(&t);
 
     return RH_OK;
 }

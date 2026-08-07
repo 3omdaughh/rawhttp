@@ -5,6 +5,7 @@
 
 #include "rawhttp_/buf.h"
 #include "rawhttp_/error.h"
+#include "rawhttp_/transport.h"
 
 /* 
  * Parses "host:port" (both parts required - raw mode has no scheme to imply a default port)
@@ -35,10 +36,15 @@ rh_err rh_raw_load_file(const char *path, int convert_crlf, rh_buf *out);
  * Deliberately does NOT attempt to parse the response as HTTP - a malformed or multi-response
  * byte stream (e.g. a smuggling payload where two requests were concatenated into `paylaod`)
  * is exactly what this mode exist ot observe raw, un-reinterpreted.
+ *
+ * `timing_out` is optional (pass NULL to skip) if given, filled in with TTFB/total timing measured from
+ * just after connect. A response that's suspiciously used to detect a desync that causes the backend to 
+ * hang waiting for more of a request that never comes.
  * */
 
 rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int insecure, 
-                            const rh_buf *payload, rh_buf *response_out);
+                            const rh_buf *payload, rh_buf *response_out,
+                            rh_timing *timing_out);
 
 /*
  * sends `payloads[0..count]` back-to-back on ONE connection (no waiting for a response between
@@ -56,9 +62,13 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
  * looks wrong (extra/missing responses, a response that doesn't match the follow-up, an error page)
  * that mismatch is what proves a desync happen, and it's far more visible in a fast-fired pair than
  * a politely-spaced one.
+ *
+ * `timing_out` is optional (pass NULL to skip) - see rh_raw_send_and_dump. Measured from connect to the
+ * first byte of ANY response in the combined stream, and to the end of the whole combined read.
  * */
 
 rh_err rh_raw_send_sequence(const char *host, uint16_t port, int use_tls, int insecure, 
-                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out);
+                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out,
+                    rh_timing *timing_out);
 
 #endif /* RAWHTTP_RAW_H */

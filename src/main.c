@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,12 @@ static void print_usage(const char *argv0)
             "  -d,  --data DATA         request body, literal string\n"
             "       --data-file FILE    request body, read verbatim from FILE\n"
             "       --insecure          skip TLS certificate verification\n"
+            "       --timing            report TTFB/total time (all modes - a suspiciously slow\n)"
+            "                           TTFB can signal a backend hanging on a desynced request.\n"
+            "                           In --raw/--smuggle mode, 'total' includes the fixed idle-\n"
+            "                           timeout wait for a possible delayed second response, so\n"
+            "                           TTFB is the more reliable signal there; in normal mode,\n"
+            "                           'total' reflects genuine response completion.\n"
             "\n"
             "raw mode - sends FILE's bytes verbatim, zero normalization:\n"
             "       --raw FILE          send FILE's bytes exactly as-is (no URL/headers/body flag apply)\n"
@@ -155,23 +163,33 @@ static void hex_dump(FILE *out, const char *data, size_t len)
  * */
 
 static int send_and_report(const char *host, uint16_t port, int use_tls, int insecure, 
-                    const rh_buf *payload1, const rh_buf *payload2)
+                    const rh_buf *payload1, const rh_buf *payload2, int show_timing)
 {
     rh_buf response;
+    rh_timing timing;
     rh_err err;
     if (payload2)
     {
         rh_buf payloads[2];
         payloads[0] = *payload1;
         payloads[1] = *payload2;
-        err = rh_raw_send_sequence(host, port, use_tls, insecure, payloads, 2, &response);
+        err = rh_raw_send_sequence(host, port, use_tls, insecure, payloads, 2, &response, &timing);
     }
-    else err = rh_raw_send_and_dump(host, port, use_tls, insecure, payload1, &response);
+    else err = rh_raw_send_and_dump(host, port, use_tls, insecure, payload1, &response, &timing);
 
     if (err != RH_OK)
     {
         fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
         return 1;
+    }
+
+    if (show_timing)
+    {
+        if (timing.ttfb_ms < 0.0)
+            fprintf(stderr, "--- [~] timing: no response received ---\n");
+        else 
+            fprintf(stderr, "--- [~] timing: TTFB=%.1fms total=%.1fms ---\n", timing.ttfb_ms,
+                    timing.total_ms);
     }
 
     fprintf(stderr, "--- received %zu bytes ---\n", response.len);
@@ -219,7 +237,7 @@ static rh_err build_probe_request(const char *host_header, rh_buf *out)
 }
 
 static int run_raw_mode(const char *raw_file, const char *raw_file2, const char *target,
-                int convert_crlf, int use_tls, int insecure)
+                int convert_crlf, int use_tls, int insecure, int show_timing)
 {
     if (!target)
     {
@@ -272,7 +290,7 @@ static int run_raw_mode(const char *raw_file, const char *raw_file2, const char 
     }
 
     int rc = send_and_report(host, port, use_tls, insecure, &payload, have_payload2 ? &payload2
-                    : NULL);
+                    : NULL, show_timing);
     free(host);
     rh_buf_free(&payload);
     if (have_payload2) rh_buf_free(&payload2);
@@ -291,7 +309,7 @@ static int run_raw_mode(const char *raw_file, const char *raw_file2, const char 
 
 static int run_smuggle_mode(const char *technique_name, const char *target,
                     const char *path, const char *smuggle_host, const char *smuggled,
-                    long cl1, long cl2, int probe, int use_tls, int insecure)
+                    long cl1, long cl2, int probe, int use_tls, int insecure, int show_timing)
 {
     if (!target)
     {
@@ -351,7 +369,7 @@ static int run_smuggle_mode(const char *technique_name, const char *target,
         hex_dump(stderr, probe_req.data, probe_request.len);
     }
 
-    int rc = send_and_report(host, port, use_tls, insecure, &payload, have_probe ? &probe_req : NULL);
+    int rc = send_and_report(host, port, use_tls, insecure, &payload, have_probe ? &probe_req : NULL, show_timing);
     free(host);
     rh_buf_free(&payload);
     if (have_probe) rh_buf_free(&probe_req);
@@ -380,6 +398,7 @@ signed main(int argc, char** argv)
     long cl1                            = -1;
     long cl2                            = -1;
     int probe                           = 0;
+    int show_timing                     = 0;
 
     rh_request_header *headers          = NULL;
     size_t header_count                 = 0;
@@ -486,6 +505,7 @@ signed main(int argc, char** argv)
             cl2 = strtol(argv[++i], NULL, 10);
         }
         else if (strcmp(argv[i], "--probe") == 0) probe = 1;
+        else if (strcmp(argv[i], "--timing") == 0) show_timing = 1;
         else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
         {
             if (i+1 >= argc)
@@ -588,7 +608,7 @@ signed main(int argc, char** argv)
          */
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
-        return run_raw_mode(raw_file, raw_file2, target, convert_crlf, use_tls, insecure);
+        return run_raw_mode(raw_file, raw_file2, target, convert_crlf, use_tls, insecure, show_timing);
     }
 
     if (smuggle_technique)
@@ -596,7 +616,7 @@ signed main(int argc, char** argv)
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return run_smuggle_mode(smuggle_target, target, smuggle_path, smuggle_host,
-                smuggled, cl1, cl2, probe, use_tls, insecure);
+                smuggled, cl1, cl2, probe, use_tls, insecure, show_timing);
     }
 
     if (!url_str)
@@ -632,6 +652,8 @@ signed main(int argc, char** argv)
         return 1;
     }
     LOG_INFO("[~] connected to %s:%u (fd=%d)", url.host, url.port, fd);
+    struct timespec t_connect;
+    clock_gettime(CLOCK_MONOTONIC, &t_connect);
 
     rh_transport transport;
     
@@ -738,6 +760,19 @@ signed main(int argc, char** argv)
     }
 
     LOG_INFO("[~] received %zu byte body", resp.body.len);
+
+    if (show_timing)
+    {
+        struct timespec t_end;
+        clock_gettime(CLOCK_MONOTONIC, &t_end);
+        if (transport.first_byte_recorded)
+        {
+            double ttfb_ms = rh_timespec_diff_ms(&t_connect, &transport.first_byte_at);
+            double total_ms = rh_timespec_diff_ms(&t_connect, &t_end);
+            fprintf(stderr, "--- [~] timing: TTFB=%.1fms total=%.1fms ---\n", ttfb_ms, total_ms);
+        }
+        else fprintf(stderr, "--- [~] timing: no response received ---\n");
+    }
 
     printf("HTTP/%d.%d %d %s\n", resp.http_major, resp.http_minor, resp.status, resp.reason);
     for (size_t i = 0; i < resp.header_count; i++)

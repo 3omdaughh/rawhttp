@@ -70,4 +70,22 @@ rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int 
  * */
 double rh_timespec_diff_ms(const struct timespec *a, const struct timespec *b);
 
+/*
+ * TTFB/total timing for one request (or one send-sequence run) ttfb_ms is -1.0 if no response 
+ * byte was ever received (connection failed/closed before anything arrived) - distinct from a
+ * genuine 0, which would mean data arrived essentially instantly.
+ *
+ * Caveat for rh_raw_send_and_dump/rh_raw_send_sequence specifically: since those read via 
+ * rh_recv_until_idle rather than protocol-aware framing, total_ms includes the fixed idle
+ * timeout wait for a possible delayed second response - it is NOT pure measuremnet of how
+ * long the peer took to finish responding. ttfb_ms is unaffected and remains the reliable
+ * signal in that context. The normal request/response path (Content-Length/chunked-framed)
+ * doesn't have this caveat - its total_ms reflects genuine completion.
+ * */
+typedef struct 
+{
+    double ttfb_ms;
+    double total_ms;
+} rh_timing;
+
 #endif /* RAWHTTP_TRANSPORT_H */
