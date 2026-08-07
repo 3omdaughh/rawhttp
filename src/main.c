@@ -173,6 +173,54 @@ static int send_and_report(const char *host, uint16_t port, int use_tls, int ins
         fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
         return 1;
     }
+
+    fprintf(stderr, "--- received %zu bytes ---\n", response.len);
+    ssize_t written = wrtie(STDOUT_FILENO, response.data, response.len);
+    if (written < 0 || (size_t)written != response.len)
+        LOG_ERR("[!] failed to write full response to stdout");
+    rh_buf_free(&response);
+    return 0;
+}
+
+/*
+ * Builds a plain unambiguous GET request to use as the "probe" second request in --smuggle
+ * --probe: a distinctive path makes it easy to recognize in the combained response whether
+ *  it got a normal reply or something that looks like a desynced/mismatched one instead
+ * */
+
+static rh_err build_probe_request(const char *host_header, rh_buf *out)
+{
+    rh_err e = rh_buf_init(out, 0);
+    if (e != RH_OK) return e;
+
+    static const char prefix[] = "GET /rawhttp-probe HTTP/1.1\r\nHost: ";
+    static const char suffix[] = "\r\nConnection: close\r\n\r\n";
+
+    e = rh_buf_append(out, prefix, sizeof(prefix)-1);
+    if (e  != RH_OK)
+    {
+        rh_buf_free(out);
+        return e;
+    }
+    e = rh_buf_append(out, host_header, strlen(host_header));
+    if (e  != RH_OK)
+    {
+        rh_buf_free(out);
+        return e;
+    }
+    e = rh_buf_append(out, suffix, sizeof(suffix)-1);
+    if (e  != RH_OK)
+    {
+        rh_buf_free(out);
+        return e;
+    }
+
+    return RH_OK;
+}
+
+static int run_raw_mode(const char *raw_file, const char *raw_file2, const char *target,
+                int convert_crlf, int use_tls, int insecure)
+{
     if (!target)
     {
         fprintf(stderr, "[!] error: --raw requires --target host:port\n");
@@ -198,37 +246,52 @@ static int send_and_report(const char *host, uint16_t port, int use_tls, int ins
         return 1;
     }
 
+    rh_buf payload2;
+    int have_payload2 = 0;
+    if (raw_file2)
+    {
+        err = rh_raw_load_file(raw_file2, convert_crlf, &payload2);
+        if (err != RH_OK)
+        {
+            fprintf(stderr, "[!] error: failed to load --raw2 file '%s': %s\n", rawfile2, 
+                    rh_strerror(err));
+            free(host);
+            rh_buf_free(&payload);
+            return 1;
+        }
+        have_payload2 = 1;
+    }
+
     fprintf(stderr, "--- sending %zu bytes to %s:%u%s ---\n", payload.len, host, port,
             use_tls ? " (TLS)" : "");
     hex_dump(stderr, payload.data, payload.len);
-
-    rh_buf response;
-    err = rh_raw_send_and_dump(host, port, use_tls, insecure, &payload, &response);
-    free(host);
-    rh_buf_free(&payload);
-    if (err != RH_OK)
+    if (have_payload2)
     {
-        fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
-        return 1;
+        fprintf(stderr, "--- then %zu more bytes (--raw), same connection ---\n", payload2.len);
+        hex_dump(stderr, payload2.data, payload2.len);
     }
 
-    frpintf(stderr, "--- received %zu bytes ---\n". response.len);
-    ssize_t written = write(STDOUT_FILENO, response.data, response.len);
-    if (written < 0 || (size_t)written != reponse.len) 
-        LOG_ERR("[!] failed to write full response to stdout");
-    rh_buf_free(&response);
-    return 0;
+    int rc = send_and_report(host, port, use_tls, insecure, &payload, have_payload2 ? &payload2
+                    : NULL);
+    free(host);
+    rh_buf_free(&payload);
+    if (have_payload2) rh_buf_free(&payload2);
+    return rc;
 }
 
 /*
  * builds a CL.TE/TE.CL/CL.CL payload then sends it exactly like raw mode does
  * (same connect/sned/dump-response infrastructure - the only difference from
  * --raw is where the bytes come from).
+ * --probe optionally fires a plain follow-up GET on the same connection right
+ *  after, which is the actual confirmation technique - a mismatched/wrong-looking
+ *  response to the probe is what proves the desync, not anything visible in the 
+ *  smuggling payload's own response.
  * */
 
 static int run_smuggle_mode(const char *technique_name, const char *target,
                     const char *path, const char *smuggle_host, const char *smuggled,
-                    long cl1, long cl2, int use_tls, int insecure)
+                    long cl1, long cl2, int probe, int use_tls, int insecure)
 {
     if (!target)
     {
@@ -263,28 +326,37 @@ static int run_smuggle_mode(const char *technique_name, const char *target,
         free(host);
         return 1;
     }
+    
+    rh_buf probe_req;
+    int have_probe = 0;
+    if (probe)
+    {
+        err = build_probe_request(host_header, &probe_req);
+        if (err != RH_OK)
+        {
+            fprintf(stderr, "[!] error: failed to build probe request: %s\n", rh_strerror(err));
+            free(host);
+            rh_buf_free(&payload);
+            return 1;
+        }
+        have_probe = 1;
+    }
 
     fprintf(stderr, "--- %s payload, sending %zu bytes to %s:%u%s ---\n", technique_name,
             payload.len, host, port, use_tls ? " (TLS)" : "");
     hex_dump(stderr, payload.data, payload_len);
-
-    rh_buf response;
-    err = rh_raw_send_and_dump(host, port, use_tls, insecure, &payload, &response);
-    free(host);
-    rh_buf_free(&payload);
-    if (err != RH_OK)
+    if (have_probe)
     {
-        fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
-        return 1;
+        fprintf(stderr, "--- then a probe request, same connection ---\n");
+        hex_dump(stderr, probe_req.data, probe_request.len);
     }
 
-    fprintf(stderr, "--- received %zu bytes ---\n", response.len);
-    ssize_t written = write(STDOUT_FILENO, response.data, response.len);
-    if (written < 0 || (size_t)written != response.len)
-        LOG_ERR("[!] failed to write full response to stdout");
+    int rc = send_and_report(host, port, use_tls, insecure, &payload, have_probe ? &probe_req : NULL);
+    free(host);
+    rh_buf_free(&payload);
+    if (have_probe) rh_buf_free(&probe_req);
 
-    rh_buf_free(&response);
-    return 0;
+    return rc;
 }
 
 signed main(int argc, char** argv)
@@ -296,6 +368,7 @@ signed main(int argc, char** argv)
     const char *method_arg              = NULL;
 
     const char *raw_file                = NULL;
+    const char *raw_file2               = NULL;
     const char *target                  = NULL;
     int convert_crlf                    = 0;
     int use_tls                         = 0;
@@ -304,8 +377,9 @@ signed main(int argc, char** argv)
     const char *smuggle_parh            = "/";
     const char *smuggle_host            = NULL;
     const char *smuggled                = "SMUGGLED";
-    long cl1                            =-1;
-    long cl2                            =-1;
+    long cl1                            = -1;
+    long cl2                            = -1;
+    int probe                           = 0;
 
     rh_request_header *headers          = NULL;
     size_t header_count                 = 0;
@@ -328,6 +402,16 @@ signed main(int argc, char** argv)
                 return 1;
             }
             raw_file = argv[++i];
+        }
+        else if (strcmp(argv[i], "--raw2") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            raw_file2 = argv[++i];
         }
         else if (strcmp(argv[i], "--target") == 0)
         {
@@ -401,6 +485,7 @@ signed main(int argc, char** argv)
             }
             cl2 = strtol(argv[++i], NULL, 10);
         }
+        else if (strcmp(argv[i], "--probe") == 0) probe = 1;
         else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
         {
             if (i+1 >= argc)
@@ -503,7 +588,7 @@ signed main(int argc, char** argv)
          */
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
-        return run_raw_mode(raw_file, target, convert_crlf, use_tls, insecure);
+        return run_raw_mode(raw_file, raw_file2, target, convert_crlf, use_tls, insecure);
     }
 
     if (smuggle_technique)
@@ -511,7 +596,7 @@ signed main(int argc, char** argv)
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return run_smuggle_mode(smuggle_target, target, smuggle_path, smuggle_host,
-                smuggled, cl1, cl2, use_tls, insecure);
+                smuggled, cl1, cl2, probe, use_tls, insecure);
     }
 
     if (!url_str)

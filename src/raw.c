@@ -138,23 +138,23 @@ rh_err rh_raw_load_file(const char *path, int convert_crlf, rh_buf *out)
  * How long to wait for more data before deciding the peer is done, on a connection
  * that doesn't close on its own (HTTP/1.1 keep-alive is the default, not an edge case).
  * This will likely become a --timeout flag in near future; for now it's a fixed, 
- * generous values that comfortably covers a normal LAN/internet round trip
+ * generous values that comfortably covers a normal LAN/internet round trip - and, 
+ * for rh_raw_send_sequence, a realistic margin under real servers' own keep-alive read 
+ * timeouts (Apache defaults to 5s, nginx to 75s - a couple seconds between request is
+ * normal).
  * */
 #define RH_RAW_IDLE_TIMEOUT_MS 2000
 
-rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int insecure, 
-                            const rh_buf *payload, rh_buf *response_out)
+static rh_err connect_transport(const char *host, uint16_t port, int use_tls, int insecure, 
+                        rh_transport *t)
 {
-    if (!host || !payload || !response_out) return RH_ERR_INVAL;
-
     int fd = -1;
     rh_err e = rh_tcp_connect(host, port, &fd);
     if (e != RH_OK) return e;
 
-    rh_transport t;
     if (use_tls)
     {
-        e = rh_transport_tls_init(&t, fd, host, insecure);
+        e = rh_transport_tls_init(t, fd, host, insecure);
         if (e != RH_OK)
         {
             close(fd);
@@ -163,13 +163,24 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
     }
     else
     {
-        e = rh_tranasport_tcp_init(&t, fd);
+        e = rh_tranasport_tcp_init(t, fd);
         if (e != RH_OK)
         {
             close(fd);
             return e;
         }
     }
+    return RH_OK;
+}
+
+rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int insecure, 
+                    const rh_buf *payload, rh_buf *response_out)
+{
+    if (!host || !payload || ! response_out) return RH_ERR_INVAL;
+
+    rh_transport t;
+    rh_err e = connect_transport(host, port, use_tls, insecure, &t);
+    if (e != RH_OK) return e;
 
     e = rh_send_all(&t, payload->data, payload->len)
     if (e != RH_OK)
@@ -190,6 +201,48 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
     if (e != RH_OK)
     {
         rh_buf_free(response_out);
+        return e;
+    }
+
+    return RH_OK;
+}
+
+rh_err rh_raw_send_sequence(const char *host, uint16_t port, int use_tls, int insecure, 
+                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out)
+{
+    if (!host || !payloads || count == 0 || !combined_response_out) return RH_ERR_INVAL;
+
+    rh_transport t;
+    rh_err e = connect_transport(host, port, use_tls, insecure, &t);
+    if (e != RH_OK) return e;
+
+    /*
+     * fire every payload immediately, back-to-back - no waiting for a response in between 
+     * (see raw.h for why)
+     * */
+    
+    for (size_t i = 0; i < count; i++)
+    {
+        e = rh_send_all(&t, payloads[i].data, payloads[i].len);
+        if (e != RH_OK)
+        {
+            t.close(&t);
+            return e;
+        }
+    }
+    
+    e = rh_buf_init(combined_response_out, 0);
+    if (e != RH_OK)
+    {
+        t.close(&t);
+        return e;
+    }
+
+    e = rh_recv_until_idle(&t, combined_response_out, RH_RAW_IDLE_TIMEOUT_MS);
+    t.close(&t);
+    if (e != RH_OK)
+    {
+        rh_buf_free(combined_response_out);
         return e;
     }
 
