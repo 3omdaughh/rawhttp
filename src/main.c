@@ -44,6 +44,7 @@ static void print_usage(const char *argv0)
             "\n"
             "raw mode - sends FILE's bytes verbatim, zero normalization:\n"
             "       --raw FILE          send FILE's bytes exactly as-is (no URL/headers/body flag apply)\n"
+            "       --raw2 FILE         optional second payload, sent immediately after on the SAME connection\n"
             "       --target host:port  where to connect (required with --raw)\n"
             "       --crlf              convert lone '\\n' to \"\\r\\n\" before sending (existing \\r\\n untouched)\n"
             "       --tls               use TLS for the raw connection\n"
@@ -55,7 +56,10 @@ static void print_usage(const char *argv0)
             "       --smuggle-host H    Host header value (default: the --target host)\n"
             "       --smuggled TEST     bytes left dangling for the desynced side (default: SMUGGLED)\n"
             "       --cl1 N             override the first Content-Length value\n"
-            "       --cl2 N             override CL.CL's second Content-Length value\n",
+            "       --cl2 N             override CL.CL's second Content-Length value\n"
+            "       --probe             send a plain follow-up GET on the same connection after the \n"
+            "                           payload - a wrong-looking response to it is what actually\n"
+            "                           confirms a desync happend\n",
             argv0, argv0);
 }
 
@@ -139,13 +143,36 @@ static void hex_dump(FILE *out, const char *data, size_t len)
     }
 }
 
-/* entirely separate code path from the normal URL-based flow:
+/* 
+ * entirely separate code path from the normal URL-based flow:
  * no request building, no response parsing, just "send these exact
  * bytes, show me whatever comes back." */
 
-static int run_raw_mode(const char *raw_file, const char *target, int convert_crlf, int use_tls, 
-                        int insecure)
+/*
+ * Shared by run_raw_mode and run_smuggle_mode: sends either one payload 
+ * (rh_raw_send_and_dump) or two back-to-back on one connection
+ * (rh_raw_send_sequence) then prints whatever comes back
+ * */
+
+static int send_and_report(const char *host, uint16_t port, int use_tls, int insecure, 
+                    const rh_buf *payload1, const rh_buf *payload2)
 {
+    rh_buf response;
+    rh_err err;
+    if (payload2)
+    {
+        rh_buf payloads[2];
+        payloads[0] = *payload1;
+        payloads[1] = *payload2;
+        err = rh_raw_send_sequence(host, port, use_tls, insecure, payloads, 2, &response);
+    }
+    else err = rh_raw_send_and_dump(host, port, use_tls, insecure, payload1, &response);
+
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: %s\n", rh_strerror(err));
+        return 1;
+    }
     if (!target)
     {
         fprintf(stderr, "[!] error: --raw requires --target host:port\n");

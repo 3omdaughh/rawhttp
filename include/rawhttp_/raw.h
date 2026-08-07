@@ -40,4 +40,25 @@ rh_err rh_raw_load_file(const char *path, int convert_crlf, rh_buf *out);
 rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int insecure, 
                             const rh_buf *payload, rh_buf *response_out);
 
+/*
+ * sends `payloads[0..count]` back-to-back on ONE connection (no waiting for a response between
+ * them, no reconnection), then does a single rh_recv_until_idle collecting everything the peer
+ * sends back into `combined_resposne_out` (this function calls rh_buf_init on it).
+ *
+ * Deliberately does NOT wait for/parse a response after each payload before sending the next.
+ * Two reasons: first, without a protocol-aware framing (which raw mode intentionally doesn't do)
+ * there's no reliable way to know exactly when one response ends and the next begins, so waiting
+ * on an idle timeout between sends risks racing against the peer's OWN read timeout and corrupting
+ * the very sequencing this is meant to test.
+ * Second, and more importantly: firing requests back-to-back without waiting is the actual 
+ * mechanism smuggling confirmation needs - send a request that may desync the connection, then
+ * immediately send a normal follow-up request, and see whether the combined raw response stream
+ * looks wrong (extra/missing responses, a response that doesn't match the follow-up, an error page)
+ * that mismatch is what proves a desync happen, and it's far more visible in a fast-fired pair than
+ * a politely-spaced one.
+ * */
+
+rh_err rh_raw_send_sequence(const char *host, uint16_t port, int use_tls, int insecure, 
+                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out);
+
 #endif /* RAWHTTP_RAW_H */
