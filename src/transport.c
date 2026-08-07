@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "rawhttp_/transport.h"
 
 #include <errno.h>
@@ -10,6 +12,28 @@
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
+/*
+ * Records the CLOCK_MONOTONIC timestamp of the first successful read with data (n > 0), once per 
+ * transport instance. Shared by both backends so TTFB works identically for plain TCP and TLS
+ * */
+
+static void mark_first_byte(rh_transport *t)
+{
+    if (!t->first_byte_recorded)
+    {
+        clock_gettime(CLOCK_MONOTONIC, &t->first_byte_at);
+        t->first_byte_recorded = 1;
+    }
+}
+
+double rh_timespec_diff_ms(const struct timespec *a, const struct timespec *b)
+{
+    double sec_diff     = (double)(b->tv_sec - a->tv_sec);
+    double nsec_diff    = (double)(b->tv_nsec - a->tv_nsec);
+    return sec_diff * 1000.0 + nsec_diff / 1e6;
+}
+
+
 typedef struct
 {
     int fd;
@@ -21,9 +45,15 @@ static rh_err tcp_read(rh_transport *t, void *buf, size_t len, size_t *out_n)
     for (;;)
     {
         ssize_t n = recv(ctx->fd, buf, len, 0);
-        if (n >= 0)
+        if (n > 0)
         {
+            mark_first_byte(t);
             *out_n = (size_t)n;
+            return RH_OK;
+        }
+        if (n == 0)
+        {
+            *out_n = 0;
             return RH_OK;
         }
         if (errno == EINTR) continue;
@@ -70,12 +100,13 @@ rh_err rh_transport_tcp_init(rh_transport *t, int fd)
 
     rh_tcp_ctx *ctx = malloc(sizeof(*ctx));
     if (!ctx) return RH_ERR_MEM;
-    ctx->fd     = fd;
-    t->ctx      = ctx;
-    t->read     = tcp_read;
-    t->write    = tcp_write;
-    t->close    = tcp_close;
-    t->get_fd   = tcp_get_fd;
+    ctx->fd                     = fd;
+    t->ctx                      = ctx;
+    t->read                     = tcp_read;
+    t->write                    = tcp_write;
+    t->close                    = tcp_close;
+    t->get_fd                   = tcp_get_fd;
+    t->first_byte_recorded      = 0;
     return RH_OK;
 }
 
@@ -98,6 +129,7 @@ static rh_err tls_read(rh_transport *t, void *buf, size_t len, size_t *out_n)
         int n = SSL_read(ctx->ssl, buf, rlen);
         if (n > 0)
         {
+            mark_first_byte(t);
             *out_n = (size_t)n;
             return RH_OK;
         }
@@ -240,11 +272,12 @@ rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int 
         }
     }
 
-    t->ctx      = ctx;
-    t->read     = tls_read;
-    t->write    = tls_write;
-    t->close    = tls_close;
-    t->get_fd   = tls_get_fd;
+    t->ctx                      = ctx;
+    t->read                     = tls_read;
+    t->write                    = tls_write;
+    t->close                    = tls_close;
+    t->get_fd                   = tls_get_fd;
+    t->first_byte_recorded      = 0;
     return RH_OK;
 
 

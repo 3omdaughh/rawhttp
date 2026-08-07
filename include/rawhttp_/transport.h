@@ -2,6 +2,7 @@
 #define RAWHTTP_TRANSPORT_H
 
 #include <stddef.h>
+#include <time.h>
 
 #include "rawhttp_/error.h"
 
@@ -23,6 +24,18 @@ struct rh_transport
     rh_transport_write_fn   write;
     rh_transport_close_fn   close; /* release ctx and whatever it owns (fd, SSL objects) */
     rh_transport_get_fd_fn  get_fd;
+
+    /*
+     * set automatically (by tcp_read/tls_read) on the first successful read with n > 0
+     * bytes, via CLOCK_MONOTONIC. This is the single source of truth for "time for first
+     * byte" - it works identically for the normal request/response path, raw mode, and 
+     * smuggle mode since all three ultimately read through the same transport read 
+     * function. first_byte_recorded stays 0 if nothing was ever received (e.g. connect
+     * succeeded but the peer sent nothing before closing or timing out)
+     * */
+
+    struct timespec first_byte_at;
+    int first_byte_recorded;
 };
 
 /*
@@ -50,5 +63,11 @@ rh_err rh_transport_tcp_init(rh_transport *t, int fd);
  * Returns RH_ERR_TLS on any handshake or verification failure.
  * */
 rh_err rh_transport_tls_init(rh_transport *t, int fd, const char *hostname, int insecure);
+
+/*
+ * Milliseconds elapsed from *a to *b (both CLOCK_MONOTONIC timestamps), as a double for
+ * sub-millisecond precision in reporting.
+ * */
+double rh_timespec_diff_ms(const struct timespec *a, const struct timespec *b);
 
 #endif /* RAWHTTP_TRANSPORT_H */
