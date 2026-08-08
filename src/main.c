@@ -567,6 +567,9 @@ signed main(int argc, char** argv)
     int probe                           = 0;
     int show_timing                     = 0;
 
+    const char *fuzz_file               = NULL;
+    const char *fuzz_marker             = "FUZZ";
+
     rh_request_header *headers          = NULL;
     size_t header_count                 = 0;
     size_t header_cap                   = 0;
@@ -673,6 +676,26 @@ signed main(int argc, char** argv)
         }
         else if (strcmp(argv[i], "--probe") == 0) probe = 1;
         else if (strcmp(argv[i], "--timing") == 0) show_timing = 1;
+        else if (strcmp(argv[i], "--fuzz") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            fuzz_file = argv[++i];
+        }
+        else if (strcmp(argv[i], "--marker") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            fuzz_marker = argv[++i];
+        }
         else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
         {
             if (i+1 >= argc)
@@ -759,9 +782,9 @@ signed main(int argc, char** argv)
         }
     }
 
-    if (raw_file && smuggle_technique)
+    if ((raw_file && smuggle_technique) || (raw_file && fuzz_file) || (smuggle_technique && fuzz_file))
     {
-        fprintf(stderr, "[!] error: --raw and --smuggle are mutually exclusive\n");
+        fprintf(stderr, "[!] error: --raw, --smuggle, and --fuzz are mutually exclusive\n");
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return 1;
@@ -784,6 +807,13 @@ signed main(int argc, char** argv)
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return run_smuggle_mode(smuggle_target, target, smuggle_path, smuggle_host,
                 smuggled, cl1, cl2, probe, use_tls, insecure, show_timing);
+    }
+
+    if (fuzz_file)
+    {
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
+        return run_fuzz_mode(fuzz_file, target, fuzz_marker, convert_crlf, use_tls, insecure);
     }
 
     if (!url_str)
