@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <ctype.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #include "rawhttp_/buf.h"
 #include "rawhttp_/chunked.h"
 #include "rawhttp_/error.h"
+#include "rawhttp_/fuzz.h"
 #include "rawhttp_/io.h"
 #include "rawhhtp_/raw.h"
 #include "rawhttp_/request.h"
@@ -67,7 +69,14 @@ static void print_usage(const char *argv0)
             "       --cl2 N             override CL.CL's second Content-Length value\n"
             "       --probe             send a plain follow-up GET on the same connection after the \n"
             "                           payload - a wrong-looking response to it is what actually\n"
-            "                           confirms a desync happend\n",
+            "                           confirms a desync happend\n"
+            "\n"
+            "fuzzing - replays a mutation corpus against a template, diffs vs baseline:\n"
+            "       --fuzz FILE         raw request template containing a marker to mutate\n"
+            "       --target host:port  where to connect (required with --fuzz)\n"
+            "       --marker STR        text in FILE to replace with each payload (default: FUZZ)\n"
+            "                           (built-in corpus: long strings, controls chars, CRLF\n"
+            "                           injection, path traversal, and a few other primitives)\n"
             argv0, argv0);
 }
 
@@ -375,6 +384,164 @@ static int run_smuggle_mode(const char *technique_name, const char *target,
     if (have_probe) rh_buf_free(&probe_req);
 
     return rc;
+}
+
+/*
+ * Best-effort peek at a raw response's status code, for fuzz-report purposes only - NOT the
+ * real parser (resoponse.c), and deliberately so: this needs to tolerate garbage/partial
+ * /non-HTTP responses without erroring, since that's exactly what a fuzzed request migth 
+ * provoke. Returns -1 if it doesn't look like a status line at all.
+ * */
+
+static int peek_status_code(const rh_buf *reponse)
+{
+    if (response->len < 12 || strncmp(response->data, "HTTP/", 5) != 0) return -1;
+    size_t i = 5;
+    while (i < response->len && reponse->data[i] != ' ') 
+    {
+        i++;
+    }
+    i++; // skip the space
+    
+    if (i + 3 > response->len) return -1;
+    if (!isdigit((unsigned char)response->data[i]) || !isdigit((unsigned char)response->data[i+1])
+            || !isdigit((unsigned char)response->data[i+2])) return -1;
+    return (response->data[i]-'0')*100 + (response->data[i+1]-'0')*10 + (response->data[i+2]-'0');
+}
+
+/* replays the built-in mutation corups against `tmpl` (with `marker` substituted each time),
+ * comparing every result to a baseline (the template with marker replaced by a neutral value)
+ * and flagging anything thata looks different: status code, response length (beyond a 10%
+ * or 50 byte toleraance), or TTFB (beyond 3x baseline + 200ms). These thersholds are heuristics
+ * for catching a human's attention, not a verdict - the raw numbers are printed for every 
+ * mutation so the user can judge for themselves.
+ * */
+
+static int run_fuzz_mode(const char *fuzz_file, const char *target, const char *marker,
+                    int convert_crlf, int use_tls, int insecure)
+{
+    if (!target)
+    {
+        fprintf(stderr, "[!] error: --fuzz requires --target host:port\n");
+        return 1;
+    }
+
+    char *host = NULL;
+    uint16_t port = 0;
+    rh_err err = rh_raw_parse_target(target, &host, &port);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: invalid --target '%s': %s\n", target, rh_strerror(err));
+        return 1;
+    }
+
+    rh_buf tmpl;
+    err = rh_raw_load_file(fuzz_file, convert_crlf, &tmpl);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: failed to load --fuzz file '%s': %s\n", fuzz_file,
+                rh_strerror(err));
+        free(host);
+        return 1;
+    }
+
+    rh_buf baseline_req; 
+    err = rh_fuzz_apply(&tmpl, marker, "baseline", 8, &baseline_req);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: failed to build baseline request: %s\n", rh_strerror(err));
+        free(host);
+        rh_buf_free(&tmpl);
+        return 1;
+    }
+
+    rh_buf baseline_resp;
+    rh_timing baseline_timing;
+    rh_err baseline_err = 
+        rh_raw_send_and_dump(host, port, use_tls, insecure, &baseline_req, &baseline_resp,
+                &baseline_timing);
+    int baseline_status = baseline_err == RH_OK ? peek_status_code(&baseline_resp) : -1;
+    size_t baseline_len = baseline_err == RH_OK ? baseline_resp.len : 0;
+    double baseline_ttfb = baseline_err == RH_OK ? baseline_timing.ttfb_ms : -1.0;
+
+    fprintf(stderr, "=== baseline (marker replaced with a neutral placeholder) ===\n");
+    if (baseline_err != RH_OK)
+    {
+        fprintf(stderr, "baseline request failed: %s - mutations will still run, but every\n"
+                "comparison against this baseline is meaningless. Fix connectivity\n"
+                "first.\n", rh_strerror(baseline_err));
+    }
+    else 
+    {
+        fprintf(stderr, "status=%d len=%zu TTFB=%.1fms total=%.1fms\n\n", baseline_status,
+                baseline_len, baseline_timing.ttfb_ms, baseline_timing.total_ms);
+    }
+    if (baseline_err == RH_OK) rh_buf_free(&baseline_resp);
+    rh_buf_free(&baseline_req);
+
+    const rh_fuzz_payload *payloads = NULL;
+    size_t payload_count = rh_fuzz_default_payloads(&payloads);
+    fprintf(stderr, "%-20s %8s %10s %10s %10s  %s\n", "MUTATION", "STATUS", "LEN", "TTFB(ms)",
+            "TOTAL(ms)", "FLAGS");
+
+    size_t anomaly_count = 0;
+    for (size_t i = 0; i < payload_count; i++)
+    {
+        rh_buf mutated;
+        err = rh_fuzz_apply(&tmpl, marker, payloads[i].data, payloads[i].len, &mutated);
+        if (err != RH_OK)
+        {
+            fprintf(stderr, "%-20s ([!] failed to build mutated request: %s)\n", payloads[i].label,
+                    rh_strerror(err));
+            continue;
+        }
+
+        rh_buf resp;
+        rh_timing timing;
+        rh_err send_err = 
+            rh_raw_send_and_dump(host, port, use_tls, insecure, &mutated, &resp, &timing);
+        int status              = send_err == RH_OK ? peek_status_code(&resp) : -1;
+        size_t len              = send_err == RH_OK ? resp.len : 0;
+        double ttfb             = send_err == RH_OK ? timing.ttfb_ms : -1.0;
+        double total            = send_err == RH_OK ? timing.total_ms : -1.0;
+        
+        int status_differs      = send_err == RH_OK && status != baseline_status;
+        long len_diff           = (long)len - (long)baseline_len;
+        size_t len_threshold    = baseline_len / 10 > 50 ? baseline_len / 10 : 50;
+        int len_differs         = send_err == RH_OK && (size_t)(len_diff < 0 ? -len_diff : len_diff)
+            > len_threshold;
+        int timing_anomaly      = send_err == RH_OK && baseline_err == RH_OK && ttfb > baseline_ttfb
+            *3.0 +200.0;
+        int is_anomaly          = send_err != RH_OK || status_differs || len_differs || timing_anomaly;
+        
+        char flags[80];
+        flags[0] = '\0';
+        if (send_err != RH_OK) strcat(flags, "[send-failed]");
+        if (status_differs) strcat(flags, "[status]");
+        if (len_differs) strcat(flags, "[length]");
+        if (timing_anomaly) strcat(flags, "[timing]");
+        
+        if (send_err == RH_OK) 
+        {
+            fprintf(stderr, "%-20s %8d %10zu %10.1f %10.1f  %s\n", payloads[i].label, status, len,
+                    ttfb, total, flags);
+        }
+        else 
+        {
+            fprintf(stderr, "%-20s %8s %10s %10s %10s  %s(%s)\n", payloads[i].label, "-", "-",
+                    "-", "-", flags, rh_strerror(send_err));
+        }
+
+        if (is_anomaly) anomaly_count++;
+        if (send_err == RH_OK) rh_buf_free(&resp);
+        rh_buf_free(&mutated);
+    }
+
+    fprintf(stderr, "\n%zu/%zu mutations flagged (differ from baseline in status, length, or timing)\n",
+            anomaly_count, payload_count);
+    free(host);
+    rh_buf_free(&tmpl);
+    return 0;
 }
 
 signed main(int argc, char** argv)
