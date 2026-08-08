@@ -581,7 +581,13 @@ signed main(int argc, char** argv)
 
     for (int i = 1; i < argc; i++)
     {
-        if (strcmp(argv[i], "--insecure") == 0) insecure = 1;
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+        {
+            print_usage(argv[0]);
+            free(headers);
+            return 0;
+        }
+        else if (strcmp(argv[i], "--insecure") == 0) insecure = 1;
         else if (strcmp(argv[i], "--raw") == 0)
         {
             if (i+1 >= argc)
