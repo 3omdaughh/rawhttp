@@ -48,7 +48,7 @@ rh_err rh_raw_parse_target(const char *target, char **host_out, uint16_t *port_o
         return RH_ERR_PARSE;
     }
 
-    const *host = malloc(host_len+1);
+    char *host = malloc(host_len+1);
     if (!host) return RH_ERR_MEM;
     memcpy(host, target, host_len);
     host[host_len] = '\0';
@@ -79,7 +79,7 @@ rh_err rh_raw_load_file(const char *path, int convert_crlf, rh_buf *out)
 
     char chunk[4096];
     size_t n;
-    while ((n = fread(chnuk, 1, sizeof(chunk), f)) > 0)
+    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
     {
         e = rh_buf_append(&file_buf, chunk, n);
         if (e != RH_OK)
@@ -165,7 +165,7 @@ static rh_err connect_transport(const char *host, uint16_t port, int use_tls, in
     }
     else
     {
-        e = rh_tranasport_tcp_init(t, fd);
+        e = rh_transport_tcp_init(t, fd);
         if (e != RH_OK)
         {
             close(fd);
@@ -201,7 +201,7 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
     struct timespec t_connect;
     clock_gettime(CLOCK_MONOTONIC, &t_connect);
 
-    e = rh_send_all(&t, payload->data, payload->len)
+    e = rh_send_all(&t, payload->data, payload->len);
     if (e != RH_OK)
     {
         t.close(&t);
@@ -217,7 +217,7 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
 
     e = rh_recv_until_idle(&t, response_out, RH_RAW_IDLE_TIMEOUT_MS);
     struct timespec t_end;
-    clock_gettimg(CLOCK_MONOTONIC, &t_end);
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
     if (e != RH_OK)
     {
         t.close(&t);
@@ -231,7 +231,7 @@ rh_err rh_raw_send_and_dump(const char *host, uint16_t port, int use_tls, int in
 }
 
 rh_err rh_raw_send_sequence(const char *host, uint16_t port, int use_tls, int insecure, 
-                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out
+                    const rh_buf *payloads, size_t count, rh_buf *combined_response_out,
                     rh_timing *timing_out)
 {
     if (!host || !payloads || count == 0 || !combined_response_out) return RH_ERR_INVAL;
