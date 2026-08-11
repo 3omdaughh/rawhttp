@@ -12,7 +12,7 @@
 #include "rawhttp_/error.h"
 #include "rawhttp_/fuzz.h"
 #include "rawhttp_/io.h"
-#include "rawhhtp_/raw.h"
+#include "rawhttp_/raw.h"
 #include "rawhttp_/request.h"
 #include "rawhttp_/response.h"
 #include "rawhttp_/smuggle.h"
@@ -76,7 +76,7 @@ static void print_usage(const char *argv0)
             "       --target host:port  where to connect (required with --fuzz)\n"
             "       --marker STR        text in FILE to replace with each payload (default: FUZZ)\n"
             "                           (built-in corpus: long strings, controls chars, CRLF\n"
-            "                           injection, path traversal, and a few other primitives)\n"
+            "                           injection, path traversal, and a few other primitives)\n",
             argv0, argv0);
 }
 
@@ -143,7 +143,7 @@ static void hex_dump(FILE *out, const char *data, size_t len)
 {
     for (size_t i = 0; i < len; i+=16)
     {
-        fprinttf(out, "%08zx  ", i);
+        fprintf(out, "%08zx  ", i);
         for (size_t j = 0; j < 16; j++)
         {
             if (i+j < len) fprintf(out, "%02x ", (unsigned char)data[i+j]);
@@ -202,7 +202,7 @@ static int send_and_report(const char *host, uint16_t port, int use_tls, int ins
     }
 
     fprintf(stderr, "--- received %zu bytes ---\n", response.len);
-    ssize_t written = wrtie(STDOUT_FILENO, response.data, response.len);
+    ssize_t written = write(STDOUT_FILENO, response.data, response.len);
     if (written < 0 || (size_t)written != response.len)
         LOG_ERR("[!] failed to write full response to stdout");
     rh_buf_free(&response);
@@ -280,7 +280,7 @@ static int run_raw_mode(const char *raw_file, const char *raw_file2, const char 
         err = rh_raw_load_file(raw_file2, convert_crlf, &payload2);
         if (err != RH_OK)
         {
-            fprintf(stderr, "[!] error: failed to load --raw2 file '%s': %s\n", rawfile2, 
+            fprintf(stderr, "[!] error: failed to load --raw2 file '%s': %s\n", raw_file2, 
                     rh_strerror(err));
             free(host);
             rh_buf_free(&payload);
@@ -371,11 +371,11 @@ static int run_smuggle_mode(const char *technique_name, const char *target,
 
     fprintf(stderr, "--- %s payload, sending %zu bytes to %s:%u%s ---\n", technique_name,
             payload.len, host, port, use_tls ? " (TLS)" : "");
-    hex_dump(stderr, payload.data, payload_len);
+    hex_dump(stderr, payload.data, payload.len);
     if (have_probe)
     {
         fprintf(stderr, "--- then a probe request, same connection ---\n");
-        hex_dump(stderr, probe_req.data, probe_request.len);
+        hex_dump(stderr, probe_req.data, probe_req.len);
     }
 
     int rc = send_and_report(host, port, use_tls, insecure, &payload, have_probe ? &probe_req : NULL, show_timing);
@@ -393,11 +393,11 @@ static int run_smuggle_mode(const char *technique_name, const char *target,
  * provoke. Returns -1 if it doesn't look like a status line at all.
  * */
 
-static int peek_status_code(const rh_buf *reponse)
+static int peek_status_code(const rh_buf *response)
 {
     if (response->len < 12 || strncmp(response->data, "HTTP/", 5) != 0) return -1;
     size_t i = 5;
-    while (i < response->len && reponse->data[i] != ' ') 
+    while (i < response->len && response->data[i] != ' ') 
     {
         i++;
     }
@@ -559,7 +559,7 @@ signed main(int argc, char** argv)
     int use_tls                         = 0;
 
     const char *smuggle_technique       = NULL;
-    const char *smuggle_parh            = "/";
+    const char *smuggle_path            = "/";
     const char *smuggle_host            = NULL;
     const char *smuggled                = "SMUGGLED";
     long cl1                            = -1;
@@ -624,7 +624,7 @@ signed main(int argc, char** argv)
         {
             if (i+1 >= argc)
             {
-                print_usage(argv0);
+                print_usage(argv[0]);
                 free(headers);
                 return 1;
             }
@@ -811,7 +811,7 @@ signed main(int argc, char** argv)
     {
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
-        return run_smuggle_mode(smuggle_target, target, smuggle_path, smuggle_host,
+        return run_smuggle_mode(smuggle_technique, target, smuggle_path, smuggle_host,
                 smuggled, cl1, cl2, probe, use_tls, insecure, show_timing);
     }
 
