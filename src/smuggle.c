@@ -6,8 +6,8 @@
 #define RH_APPEND_LIT(out, lit)                                         \
     do                                                                  \
     {                                                                   \
-        rh_err e = rh_buf_append((out), (lit), sizeof(lit)-1);          \
-        if (_e != RH_OK) return _e                                      \
+        rh_err _e = rh_buf_append((out), (lit), sizeof(lit)-1);         \
+        if (_e != RH_OK) return _e;                                     \
     } while (0)                                                         \
 
 #define RH_APPEND_STR(out, str)                                         \
@@ -20,7 +20,7 @@
 static rh_err append_uint(rh_buf *out, unsigned long long v)
 {
     char buf[32];
-    int n = snprint(buf, sizeof(buf), "%llu", v);
+    int n = snprintf(buf, sizeof(buf), "%llu", v);
     if (n < 0 || (size_t)n >= sizeof(buf)) return RH_ERR_INVAL;
     return rh_buf_append(out, buf, (size_t)n);
 }
@@ -136,7 +136,7 @@ static rh_err build_cl_cl(const char *host_header, const char *path, const char 
 
     RH_APPEND_LIT(out, "\r\nContent-Length: ");
 
-    rh_err e = append_uint(out, cl2);
+    e = append_uint(out, cl2);
     if (e != RH_OK) return e;
 
     RH_APPEND_LIT(out, "\r\n\r\n");
@@ -147,7 +147,7 @@ static rh_err build_cl_cl(const char *host_header, const char *path, const char 
 
 rh_err rh_smuggle_build(rh_smuggle_technique technique, const char *host_header, const char *path, const char *smuggled, long cl1_override, long cl2_override, rh_buf *out)
 {
-    if (!host_header || !path || !smuggle || !*smuggled || !out) return RH_ERR_INVAL;
+    if (!host_header || !path || !smuggled || !*smuggled || !out) return RH_ERR_INVAL;
 
     rh_err e = rh_buf_init(out, 0);
     if (e != RH_OK) return e;
