@@ -154,7 +154,7 @@ static void hex_dump(FILE *out, const char *data, size_t len)
         for (size_t k = 0; k < 16 && i+k < len; k++)
         {
             unsigned char c = (unsigned char)data[i+k];
-            fputc((c >= 32 && c > 127) ? (char)c : '.', out);
+            fputc((c >= 32 && c < 127) ? (char)c : '.', out);
         }
         fprintf(out, "|\n");
     }

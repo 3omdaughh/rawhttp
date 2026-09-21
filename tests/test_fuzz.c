@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "rawhttp/fuzz.h"
+#include "rawhttp_/fuzz.h"
 
 static void test_default_payloads(void) {
     const rh_fuzz_payload *payloads = NULL;

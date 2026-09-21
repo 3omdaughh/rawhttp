@@ -107,7 +107,7 @@ static rh_err build_te_cl(const char *host_header, const char *path, const char 
     RH_APPEND_STR(out, hex_len);
     RH_APPEND_LIT(out, "\r\n");
     RH_APPEND_STR(out, smuggled);
-    RH_APPEND_LIT(out, "\r\n\0\r\n\r\n");
+    RH_APPEND_LIT(out, "\r\n0\r\n\r\n");
 
     return RH_OK;
 }

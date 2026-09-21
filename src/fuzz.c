@@ -32,7 +32,7 @@ static const rh_fuzz_payload default_payloads[] =
     {"sql-quote", "' OR '1'='1", sizeof("' OR '1'='1") - 1},
     {"overlong-utf8-null", "\xc0\x80", sizeof("\xc0\x80") - 1},
     {"negative-number", "-1", sizeof("-1") - 1},
-    {"huge-number", "99999999999999999999", sizeof("99999999999999999999")},
+    {"huge-number", "99999999999999999999", sizeof("99999999999999999999") - 1},
 };
 
 size_t rh_fuzz_default_payloads(const rh_fuzz_payload **out)

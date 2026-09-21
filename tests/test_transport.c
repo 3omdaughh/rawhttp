@@ -12,8 +12,8 @@
 
 #include <openssl/ssl.h>
 
-#include "rawhttp/io.h"
-#include "rawhttp/transport.h"
+#include "rawhttp_/io.h"
+#include "rawhttp_/transport.h"
 
 /* Self-signed test cert for CN=rawhttp-test.invalid, valid 10 years from
  * generation. Embedded so this test needs neither network access nor an

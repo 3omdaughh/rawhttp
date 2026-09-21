@@ -45,7 +45,7 @@ rh_err rh_recv_all(rh_transport *t, rh_buf *out)
         if (e != RH_OK)
         {
             LOG_DEBUG("[!] recv_all: transport read failed after %zu bytes buffered", out->len);
-            return 0;
+            return e;
         }
         if (n == 0) return RH_OK;
         rh_err e2 = rh_buf_append(out, chunk, n);

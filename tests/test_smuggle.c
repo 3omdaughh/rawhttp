@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "rawhttp/smuggle.h"
+#include "rawhttp_/smuggle.h"
 
 static void dump(const char *label, const char *data, size_t len) 
 {
