@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include "rawhttp_/buf.h"
@@ -22,6 +23,73 @@
 #include "rawhttp_/socket.h"
 #include "rawhttp_/transport.h"
 #include "rawhttp_/url.h"
+
+/* Terminal width for banner sizing: TIOCGWINSZ on stderr, then $COLUMNS,
+ * else a sane 80. */
+static int term_width(void)
+{
+    struct winsize ws;
+    if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+        return ws.ws_col;
+    const char *cols = getenv("COLUMNS");
+    if (cols)
+    {
+        int v = atoi(cols);
+        if (v > 0) return v;
+    }
+    return 80;
+}
+
+/*
+ * Startup banner on stderr (never stdout - keeps piped/JSON output clean),
+ * and only when stderr is an interactive terminal, so redirects and the scan
+ * pipeline stay unpolluted. Slanted block letters (a right-lean shear = an
+ * italic feel), a teal->blue gradient, and a genuinely italic tagline via the
+ * ANSI SGR italic (ESC[3m). Colour honours the NO_COLOR convention; size
+ * adapts to the current terminal width.
+ */
+static void print_banner(void)
+{
+    if (!isatty(STDERR_FILENO)) return;
+
+    int color = getenv("NO_COLOR") == NULL;
+    int w = term_width();
+
+    if (w >= 44)
+    {
+        /* genuine slanted (italic) figlet letterforms */
+        static const char *rows[] = {
+            "                        __    __  __      ",
+            "   _________ __      __/ /_  / /_/ /_____ ",
+            "  / ___/ __ `/ | /| / / __ \\/ __/ __/ __ \\",
+            " / /  / /_/ /| |/ |/ / / / / /_/ /_/ /_/ /",
+            "/_/   \\__,_/ |__/|__/_/ /_/\\__/\\__/ .___/ ",
+            "                                 /_/      ",
+        };
+        static const int grad[] = {51, 45, 39, 33, 39, 45}; /* 256-colour teal<->blue */
+        size_t nrows = sizeof(rows) / sizeof(rows[0]);
+
+        fputc('\n', stderr);
+        for (size_t i = 0; i < nrows; i++)
+        {
+            if (color) fprintf(stderr, "\x1b[1m\x1b[38;5;%dm%s\x1b[0m\n", grad[i], rows[i]);
+            else       fprintf(stderr, "%s\n", rows[i]);
+        }
+        if (color) fputs("\x1b[3;2m        raw-socket HTTP - smuggling/desync toolkit\x1b[0m\n\n", stderr);
+        else       fputs("        raw-socket HTTP - smuggling/desync toolkit\n\n", stderr);
+    }
+    else if (w >= 20)
+    {
+        if (color) fputs("\n\x1b[1;36m/=\x1b[3m rawhttp \x1b[23m=/\x1b[0m\n"
+                         "\x1b[2;3mraw HTTP desync toolkit\x1b[0m\n\n", stderr);
+        else       fputs("\n/= rawhttp =/\nraw HTTP desync toolkit\n\n", stderr);
+    }
+    else
+    {
+        if (color) fputs("\x1b[1;3;36mrawhttp\x1b[0m\n", stderr);
+        else       fputs("rawhttp\n", stderr);
+    }
+}
 
 static void print_usage(const char *argv0)
 {
@@ -783,6 +851,7 @@ static int run_scan_mode(const char *scan_file, int insecure, int concurrency,
 signed main(int argc, char** argv)
 {
     signal(SIGPIPE, SIG_IGN);
+    print_banner();
 
     int insecure                        = 0;
     const char *url_str                 = NULL;
