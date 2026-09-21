@@ -31,6 +31,18 @@ HTTP/1.1 200 OK
 - **Fuzz** (`--fuzz FILE --target host:port`): replays a mutation corpus
   against a template (marker-based), diffs every result against a baseline,
   flags anomalies.
+- **Scan** (`--scan-file FILE --concurrency N`): fetches many URLs in
+  parallel (pthreads), one result line each (status/len/TTFB/total).
+
+## Phase 4 flags (all modes)
+
+- `--timeout MS` — bounds connect and every read/write (`0` = none). Surfaces
+  as `operation timed out`. Uses a non-blocking connect + `poll()`, and
+  `SO_RCVTIMEO`/`SO_SNDTIMEO` for I/O (also bounds TLS).
+- `--proxy host:port` — tunnels every connection through an HTTP `CONNECT`
+  proxy (e.g. Burp). TLS still terminates end-to-end at the real target.
+- `--output raw|pretty|json` — normal/scan response rendering. `raw` is the
+  byte-exact default; `json` base64-encodes the body so binary is lossless.
 
 Run `./rawhttp --help` for the full flag list, or see `examples/` for
 ready-to-use payload templates.

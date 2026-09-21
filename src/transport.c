@@ -57,6 +57,7 @@ static rh_err tcp_read(rh_transport *t, void *buf, size_t len, size_t *out_n)
             return RH_OK;
         }
         if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return RH_ERR_TIMEOUT;
         return RH_ERR_IO;
     }
 }
@@ -73,6 +74,7 @@ static rh_err tcp_write(rh_transport *t, const void *buf, size_t len, size_t *ou
             return RH_OK;
         }
         if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return RH_ERR_TIMEOUT;
         return RH_ERR_IO;
     }
 }
@@ -139,7 +141,7 @@ static rh_err tls_read(rh_transport *t, void *buf, size_t len, size_t *out_n)
             *out_n = 0; // peer sent close_notify - clean TLS_level EOF
             return RH_OK;
         }
-        if (se == SSL_ERROR_WANT_READ || se == SSL_ERROR_WANT_WRITE) continue; // blocking socket - a renegotiation blip, just retry 
+        if (se == SSL_ERROR_WANT_READ || se == SSL_ERROR_WANT_WRITE) continue; // blocking socket - a renegotiation blip, just retry
         if (se == SSL_ERROR_SYSCALL && n == 0)
         {
             /*
@@ -150,6 +152,8 @@ static rh_err tls_read(rh_transport *t, void *buf, size_t len, size_t *out_n)
             *out_n = 0;
             return RH_OK;
         }
+        if (se == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return RH_ERR_TIMEOUT; // SO_RCVTIMEO fired mid-record
         return RH_ERR_IO;
     }
 }
@@ -169,6 +173,8 @@ static rh_err tls_write(rh_transport *t, const void *buf, size_t len, size_t *ou
         }
         int se = SSL_get_error(ctx->ssl, n);
         if (se == SSL_ERROR_WANT_READ || se == SSL_ERROR_WANT_WRITE) continue;
+        if (se == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return RH_ERR_TIMEOUT;
         return RH_ERR_IO;
     }
 }

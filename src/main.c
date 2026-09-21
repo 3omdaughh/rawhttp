@@ -9,31 +9,19 @@
 
 #include "rawhttp_/buf.h"
 #include "rawhttp_/chunked.h"
+#include "rawhttp_/client.h"
 #include "rawhttp_/error.h"
 #include "rawhttp_/fuzz.h"
 #include "rawhttp_/io.h"
+#include "rawhttp_/output.h"
 #include "rawhttp_/raw.h"
 #include "rawhttp_/request.h"
 #include "rawhttp_/response.h"
+#include "rawhttp_/scan.h"
 #include "rawhttp_/smuggle.h"
 #include "rawhttp_/socket.h"
 #include "rawhttp_/transport.h"
 #include "rawhttp_/url.h"
-
-static int header_equals_ci(const char *value, const char *want)
-{
-    if (!value) return 0;
-
-    size_t i = 0;
-    for (; value[i] && want[i]; i++)
-    {
-        char a = value[i], b = want[i];
-        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-        if (a != b) return 0;
-    }
-    return value[i] == '\0' && want [i] == '\0';
-}
 
 static void print_usage(const char *argv0)
 {
@@ -45,6 +33,9 @@ static void print_usage(const char *argv0)
             "  -d,  --data DATA         request body, literal string\n"
             "       --data-file FILE    request body, read verbatim from FILE\n"
             "       --insecure          skip TLS certificate verification\n"
+            "       --output MODE        normal/scan mode output: raw (default) | pretty | json\n"
+            "       --timeout MS         connect + per read/write timeout in ms (0 = none; all modes)\n"
+            "       --proxy host:port    tunnel every connection through an HTTP CONNECT proxy (Burp)\n"
             "       --timing            report TTFB/total time (all modes - a suspiciously slow\n)"
             "                           TTFB can signal a backend hanging on a desynced request.\n"
             "                           In --raw/--smuggle mode, 'total' includes the fixed idle-\n"
@@ -76,7 +67,12 @@ static void print_usage(const char *argv0)
             "       --target host:port  where to connect (required with --fuzz)\n"
             "       --marker STR        text in FILE to replace with each payload (default: FUZZ)\n"
             "                           (built-in corpus: long strings, controls chars, CRLF\n"
-            "                           injection, path traversal, and a few other primitives)\n",
+            "                           injection, path traversal, and a few other primitives)\n"
+            "\n"
+            "concurrent scan - fetches many URLs in parallel, one result line each:\n"
+            "       --scan-file FILE    file of URLs, one per line (blank lines and '#' comments skipped)\n"
+            "       --concurrency N     worker threads (default: 1; clamped to the target count)\n"
+            "                           honors --timeout/--proxy/--output (json emits a JSON array)\n",
             argv0, argv0);
 }
 
@@ -544,6 +540,246 @@ static int run_fuzz_mode(const char *fuzz_file, const char *target, const char *
     return 0;
 }
 
+/* --- T4.3b response renderers --- */
+
+static void render_json(const rh_response *resp)
+{
+    rh_buf j;
+    if (rh_buf_init(&j, 256) != RH_OK) return;
+
+    char head[64];
+    int hn = snprintf(head, sizeof(head), "{\"status\":%d,\"http_version\":\"%d.%d\",\"reason\":\"",
+                      resp->status, resp->http_major, resp->http_minor);
+    rh_buf_append(&j, head, (size_t)hn);
+    if (resp->reason) rh_json_escape(resp->reason, strlen(resp->reason), &j);
+    rh_buf_append(&j, "\",\"headers\":[", 13);
+
+    for (size_t i = 0; i < resp->header_count; i++)
+    {
+        if (i) rh_buf_append(&j, ",", 1);
+        rh_buf_append(&j, "{\"name\":\"", 9);
+        rh_json_escape(resp->headers[i].name, strlen(resp->headers[i].name), &j);
+        rh_buf_append(&j, "\",\"value\":\"", 11);
+        rh_json_escape(resp->headers[i].value, strlen(resp->headers[i].value), &j);
+        rh_buf_append(&j, "\"}", 2);
+    }
+
+    rh_buf_append(&j, "],\"body_base64\":\"", 17);
+    rh_base64_encode(resp->body.data, resp->body.len, &j);
+    rh_buf_append(&j, "\"}\n", 3);
+
+    fwrite(j.data, 1, j.len, stdout);
+    rh_buf_free(&j);
+}
+
+/* Writes the status line + headers, then the body verbatim via write() so
+ * embedded NULs/binary bodies pass through unmodified. `pretty` adds
+ * human-friendly separators; otherwise it's the plain raw dump. */
+static void render_text(const rh_response *resp, int pretty)
+{
+    if (pretty)
+        printf("--- HTTP/%d.%d %d %s (%zu headers) ---\n",
+               resp->http_major, resp->http_minor, resp->status,
+               resp->reason ? resp->reason : "", resp->header_count);
+    else
+        printf("HTTP/%d.%d %d %s\n", resp->http_major, resp->http_minor,
+               resp->status, resp->reason ? resp->reason : "");
+
+    for (size_t i = 0; i < resp->header_count; i++)
+        printf("%s: %s\n", resp->headers[i].name, resp->headers[i].value);
+
+    if (pretty) printf("--- body (%zu bytes) ---\n", resp->body.len);
+    else        printf("\n");
+    fflush(stdout);
+
+    if (resp->body.len > 0)
+    {
+        ssize_t w = write(STDOUT_FILENO, resp->body.data, resp->body.len);
+        if (w < 0 || (size_t)w != resp->body.len)
+            LOG_ERR("[!] failed to write full body to stdout");
+    }
+}
+
+static void render_response(const rh_response *resp, const char *output_mode)
+{
+    if (strcmp(output_mode, "json") == 0)        render_json(resp);
+    else if (strcmp(output_mode, "pretty") == 0) render_text(resp, 1);
+    else                                         render_text(resp, 0);
+}
+
+static int run_normal_mode(const char *url_str, const char *method_arg,
+                           const rh_request_header *headers, size_t header_count,
+                           const void *body, size_t body_len, int insecure,
+                           const char *output_mode, int show_timing)
+{
+    rh_url url;
+    rh_err err = rh_url_parse(url_str, &url);
+    if (err != RH_OK)
+    {
+        LOG_ERR("[!] failed to parse '%s': %s", url_str, rh_strerror(err));
+        return 1;
+    }
+
+    const char *method = method_arg ? method_arg : (body_len > 0 ? "POST" : "GET");
+
+    rh_response resp;
+    rh_timing timing;
+    err = rh_client_request(&url, method, headers, header_count, body, body_len,
+                            insecure, &resp, &timing);
+    rh_url_free(&url);
+    if (err != RH_OK)
+    {
+        LOG_ERR("[!] request failed: %s", rh_strerror(err));
+        return 1;
+    }
+
+    if (show_timing)
+    {
+        if (timing.ttfb_ms < 0.0)
+            fprintf(stderr, "--- [~] timing: no response received ---\n");
+        else
+            fprintf(stderr, "--- [~] timing: TTFB=%.1fms total=%.1fms ---\n",
+                    timing.ttfb_ms, timing.total_ms);
+    }
+
+    render_response(&resp, output_mode);
+    rh_response_free(&resp);
+    return 0;
+}
+
+/* --- T4.2 scan mode --- */
+
+/* Reads `path` line by line into a heap array of strdup'd URLs. Blank lines
+ * and lines whose first non-space char is '#' are skipped. */
+static rh_err parse_scan_file(const char *path, char ***urls_out, size_t *count_out)
+{
+    rh_buf file;
+    rh_err e = rh_raw_load_file(path, 0, &file);
+    if (e != RH_OK) return e;
+
+    char **urls = NULL;
+    size_t count = 0, cap = 0;
+
+    size_t i = 0;
+    while (i < file.len)
+    {
+        size_t start = i;
+        while (i < file.len && file.data[i] != '\n') i++;
+        size_t end = i;
+        if (i < file.len) i++;
+
+        while (start < end && (file.data[start] == ' ' || file.data[start] == '\t' ||
+                               file.data[start] == '\r')) start++;
+        while (end > start && (file.data[end-1] == ' ' || file.data[end-1] == '\t' ||
+                               file.data[end-1] == '\r')) end--;
+
+        if (end == start || file.data[start] == '#') continue;
+
+        size_t n = end - start;
+        char *line = malloc(n + 1);
+        if (!line) { e = RH_ERR_MEM; goto fail; }
+        memcpy(line, file.data + start, n);
+        line[n] = '\0';
+
+        if (count == cap)
+        {
+            size_t ncap = cap ? cap * 2 : 8;
+            char **na = realloc(urls, ncap * sizeof(*urls));
+            if (!na) { free(line); e = RH_ERR_MEM; goto fail; }
+            urls = na;
+            cap = ncap;
+        }
+        urls[count++] = line;
+    }
+
+    rh_buf_free(&file);
+    *urls_out = urls;
+    *count_out = count;
+    return RH_OK;
+
+fail:
+    for (size_t k = 0; k < count; k++) free(urls[k]);
+    free(urls);
+    rh_buf_free(&file);
+    return e;
+}
+
+static int run_scan_mode(const char *scan_file, int insecure, int concurrency,
+                         const char *output_mode)
+{
+    char **urls = NULL;
+    size_t count = 0;
+    rh_err err = parse_scan_file(scan_file, &urls, &count);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: failed to read --scan-file '%s': %s\n", scan_file,
+                rh_strerror(err));
+        return 1;
+    }
+    if (count == 0)
+    {
+        fprintf(stderr, "[!] error: --scan-file '%s' has no targets\n", scan_file);
+        free(urls);
+        return 1;
+    }
+
+    rh_scan_result *results = calloc(count, sizeof(*results));
+    if (!results)
+    {
+        fprintf(stderr, "[!] error: out of memory\n");
+        for (size_t k = 0; k < count; k++) free(urls[k]);
+        free(urls);
+        return 1;
+    }
+
+    fprintf(stderr, "--- scanning %zu targets, concurrency %d ---\n", count, concurrency);
+    err = rh_scan_run(urls, count, insecure, concurrency, results);
+    if (err != RH_OK)
+    {
+        fprintf(stderr, "[!] error: scan failed to start: %s\n", rh_strerror(err));
+        free(results);
+        for (size_t k = 0; k < count; k++) free(urls[k]);
+        free(urls);
+        return 1;
+    }
+
+    int json = strcmp(output_mode, "json") == 0;
+    if (json) printf("[");
+    else printf("%-40s %8s %10s %10s %10s\n", "URL", "STATUS", "LEN", "TTFB(ms)", "TOTAL(ms)");
+
+    for (size_t k = 0; k < count; k++)
+    {
+        rh_scan_result *r = &results[k];
+        if (json)
+        {
+            if (k) printf(",");
+            rh_buf esc;
+            rh_buf_init(&esc, 0);
+            rh_json_escape(r->url, strlen(r->url), &esc);
+            if (r->err == RH_OK)
+                printf("{\"url\":\"%.*s\",\"status\":%d,\"len\":%zu,\"ttfb_ms\":%.1f,\"total_ms\":%.1f}",
+                       (int)esc.len, esc.data, r->status, r->body_len, r->ttfb_ms, r->total_ms);
+            else
+                printf("{\"url\":\"%.*s\",\"error\":\"%s\"}", (int)esc.len, esc.data,
+                       rh_strerror(r->err));
+            rh_buf_free(&esc);
+        }
+        else if (r->err == RH_OK)
+            printf("%-40s %8d %10zu %10.1f %10.1f\n", r->url, r->status, r->body_len,
+                   r->ttfb_ms, r->total_ms);
+        else
+            printf("%-40s %8s %10s %10s %10s  (%s)\n", r->url, "-", "-", "-", "-",
+                   rh_strerror(r->err));
+    }
+    if (json) printf("]\n");
+
+    free(results);
+    for (size_t k = 0; k < count; k++) free(urls[k]);
+    free(urls);
+    return 0;
+}
+
+
 signed main(int argc, char** argv)
 {
     signal(SIGPIPE, SIG_IGN);
@@ -569,6 +805,12 @@ signed main(int argc, char** argv)
 
     const char *fuzz_file               = NULL;
     const char *fuzz_marker             = "FUZZ";
+
+    int timeout_ms                      = 0;      /* T4.1: 0 = no timeout */
+    const char *proxy_target            = NULL;   /* T4.3c: host:port */
+    const char *output_mode             = "raw";  /* T4.3b: raw|pretty|json */
+    const char *scan_file               = NULL;   /* T4.2 */
+    int concurrency                     = 1;      /* T4.2 */
 
     rh_request_header *headers          = NULL;
     size_t header_count                 = 0;
@@ -702,6 +944,63 @@ signed main(int argc, char** argv)
             }
             fuzz_marker = argv[++i];
         }
+        else if (strcmp(argv[i], "--timeout") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            timeout_ms = (int)strtol(argv[++i], NULL, 10);
+        }
+        else if (strcmp(argv[i], "--proxy") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            proxy_target = argv[++i];
+        }
+        else if (strcmp(argv[i], "--output") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            output_mode = argv[++i];
+            if (strcmp(output_mode, "raw") != 0 && strcmp(output_mode, "pretty") != 0 &&
+                strcmp(output_mode, "json") != 0)
+            {
+                fprintf(stderr, "[!] error: --output must be raw|pretty|json, got '%s'\n", output_mode);
+                free(headers);
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--scan-file") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            scan_file = argv[++i];
+        }
+        else if (strcmp(argv[i], "--concurrency") == 0)
+        {
+            if (i+1 >= argc)
+            {
+                print_usage(argv[0]);
+                free(headers);
+                return 1;
+            }
+            concurrency = (int)strtol(argv[++i], NULL, 10);
+        }
         else if (strcmp(argv[i], "-X") == 0 || strcmp(argv[i], "--method") == 0)
         {
             if (i+1 >= argc)
@@ -788,20 +1087,40 @@ signed main(int argc, char** argv)
         }
     }
 
-    if ((raw_file && smuggle_technique) || (raw_file && fuzz_file) || (smuggle_technique && fuzz_file))
+
+
+    /* T4.1/T4.3c: process-wide connection config, applied before any connect. */
+    rh_socket_set_default_timeout(timeout_ms);
+    if (proxy_target)
     {
-        fprintf(stderr, "[!] error: --raw, --smuggle, and --fuzz are mutually exclusive\n");
-        free(headers);
-        if (have_data_file_buf) rh_buf_free(&data_file_buf);
-        return 1;
+        char *phost = NULL;
+        uint16_t pport = 0;
+        rh_err pe = rh_raw_parse_target(proxy_target, &phost, &pport);
+        if (pe != RH_OK)
+        {
+            fprintf(stderr, "[!] error: invalid --proxy '%s': %s\n", proxy_target, rh_strerror(pe));
+            free(headers);
+            if (have_data_file_buf) rh_buf_free(&data_file_buf);
+            return 1;
+        }
+        rh_socket_set_proxy(phost, pport);
+        free(phost);
+    }
+
+    {
+        int mode_count = (raw_file ? 1 : 0) + (smuggle_technique ? 1 : 0) +
+                         (fuzz_file ? 1 : 0) + (scan_file ? 1 : 0);
+        if (mode_count > 1)
+        {
+            fprintf(stderr, "[!] error: --raw, --smuggle, --fuzz, --scan-file are mutually exclusive\n");
+            free(headers);
+            if (have_data_file_buf) rh_buf_free(&data_file_buf);
+            return 1;
+        }
     }
 
     if (raw_file)
     {
-        /*
-         * raw mode ignores URL/method/header/body/flags entirely - free anything 
-         * accidentally allocated by them before dispatching
-         */
         free(headers);
         if (have_data_file_buf) rh_buf_free(&data_file_buf);
         return run_raw_mode(raw_file, raw_file2, target, convert_crlf, use_tls, insecure, show_timing);
@@ -822,6 +1141,13 @@ signed main(int argc, char** argv)
         return run_fuzz_mode(fuzz_file, target, fuzz_marker, convert_crlf, use_tls, insecure);
     }
 
+    if (scan_file)
+    {
+        free(headers);
+        if (have_data_file_buf) rh_buf_free(&data_file_buf);
+        return run_scan_mode(scan_file, insecure, concurrency, output_mode);
+    }
+
     if (!url_str)
     {
         print_usage(argv[0]);
@@ -830,180 +1156,10 @@ signed main(int argc, char** argv)
         return 1;
     }
 
-    const char *method = method_arg ? method_arg : (body_len > 0 ? "POST" : "GET");
-
-    rh_url url;
-    rh_err err = rh_url_parse(url_str, &url);
-    if(err != RH_OK)
-    {
-        LOG_ERR("[!] failed to parse '%s': %s", url_str, rh_strerror(err));
-        free(headers);
-        if (have_data_file_buf) rh_buf_free(&data_file_buf);
-        return 1;
-    }
-
-    int is_https = strcmp(url.scheme, "https") == 0;
-
-    int fd = -1;
-    err = rh_tcp_connect(url.host, url.port, &fd);
-    if (err != RH_OK)
-    {
-        LOG_ERR("[!] failed to connect to %s:%u: %s", url.host, url.port, rh_strerror(err));
-        rh_url_free(&url);
-        free(headers);
-        if (have_data_file_buf) rh_buf_free(&data_file_buf);
-        return 1;
-    }
-    LOG_INFO("[~] connected to %s:%u (fd=%d)", url.host, url.port, fd);
-    struct timespec t_connect;
-    clock_gettime(CLOCK_MONOTONIC, &t_connect);
-
-    rh_transport transport;
-    
-    if (is_https)
-    {
-        if (insecure) LOG_WARN("[~] --insecure: skipping TLS certificate verification");
-        err = rh_transport_tls_init(&transport, fd, url.host, insecure);
-        if (err != RH_OK)
-        {
-            LOG_ERR("[!] TLS handshake with %s failed: %s", url.host, rh_strerror(err));
-            close(fd);
-            rh_url_free(&url);
-            free(headers);
-            if (have_data_file_buf) rh_buf_free(&data_file_buf);
-            return 1;
-        }
-        LOG_INFO("[~] TLS handshake with %s complete%s", url.host, insecure ? " (unverified)" : "");
-    }
-    else 
-    {
-        err = rh_transport_tcp_init(&transport, fd);
-        if (err != RH_OK)
-        {
-            LOG_ERR("[!] failed to init transport: %s", rh_strerror(err));
-            close(fd);
-            rh_url_free(&url);
-            free(headers);
-            if (have_data_file_buf) rh_buf_free(&data_file_buf);
-            return 1;
-        }
-    }
-
-    rh_buf req;
-    err = rh_buf_init(&req, 0);
-    if (err != RH_OK)
-    {
-        LOG_ERR("[!] failed to allocate request buffer: %s", rh_strerror(err));
-        goto cleanup_transport;
-    }
-
-    err = rh_request_build(method, &url, headers, header_count, body, body_len, 1, &req);
-    if (err != RH_OK)
-    {
-        LOG_ERR("[!] failed to build request: %s", rh_strerror(err));
-        goto cleanup_req;
-    }
-
-    err = rh_send_all(&transport, req.data, req.len);
-    if (err != RH_OK)
-    {
-        LOG_ERR("[!] failed to send request: %s", rh_strerror(err));
-        goto cleanup_req;
-    }
-    LOG_INFO("[~] sent %zu byte request", req.len);
-
-    rh_buf raw;
-    err = rh_buf_init(&raw, 0);
-    if (err != RH_OK)
-    {
-        LOG_ERR("[!] failed to allicate response buffer: %s", rh_strerror(err));
-        goto cleanup_req;
-    }
-
-    rh_response resp;
-    size_t header_end;
-    err = rh_response_read_headers(&transport, &raw, &resp, &header_end);
-    if(err != RH_OK)
-    {
-        LOG_ERR("[!] failed to read response headers: %s", rh_strerror(err));
-        goto cleanup_raw;
-    }
-    LOG_INFO("[~] parsed status %d, %zu headers", resp.status, resp.header_count);
-    /*
-     * pick body framing: chunked > Content_Length > read-until-close,
-     * same precedence order real HTTP client use
-     */
-    {
-        const char *te = rh_header_get(&resp, "Transfer-Encoding");
-        const char *cl = rh_header_get(&resp, "Content-Length");
-
-        if (te && header_equals_ci(te, "chunked"))
-        {
-            size_t cursor = header_end;
-            err = rh_chunked_decode(&transport, &raw, &cursor, &resp);
-        }
-        else if (cl)
-        {
-            char *endptr = NULL;
-            unsigned long long len = strtoull(cl, &endptr, 10);
-            if (!endptr || *endptr != '\0' || endptr == cl)
-            {
-                LOG_ERR("[!] malformed Content-Length header; '%s'", cl);
-                err = RH_ERR_PARSE;
-            }
-            else err = rh_response_read_body_content_length(&transport, &raw, header_end, &resp, (size_t)len);
-        }
-        else err = rh_response_read_body_until_close(&transport, &raw, header_end, &resp);
-    }
-
-    if (err != RH_OK)
-    {
-        LOG_ERR("[!] failed to read response body: %s", rh_strerror(err));
-        goto cleanup_resp;
-    }
-
-    LOG_INFO("[~] received %zu byte body", resp.body.len);
-
-    if (show_timing)
-    {
-        struct timespec t_end;
-        clock_gettime(CLOCK_MONOTONIC, &t_end);
-        if (transport.first_byte_recorded)
-        {
-            double ttfb_ms = rh_timespec_diff_ms(&t_connect, &transport.first_byte_at);
-            double total_ms = rh_timespec_diff_ms(&t_connect, &t_end);
-            fprintf(stderr, "--- [~] timing: TTFB=%.1fms total=%.1fms ---\n", ttfb_ms, total_ms);
-        }
-        else fprintf(stderr, "--- [~] timing: no response received ---\n");
-    }
-
-    printf("HTTP/%d.%d %d %s\n", resp.http_major, resp.http_minor, resp.status, resp.reason);
-    for (size_t i = 0; i < resp.header_count; i++)
-        printf("%s: %s\n", resp.headers[i].name, resp.headers[i].value);
-    printf("\n");
-    fflush(stdout);
-    /* raw dump - write() not printf(), so embedded NULs/binary bodies
-     * pass through unmodified rather than truncating at the first NUL */
-
-    if (resp.body.len > 0)
-    {
-        ssize_t written = write(STDOUT_FILENO, resp.body.data, resp.body.len);
-        if(written < 0 || (size_t)written != resp.body.len)
-        LOG_ERR("[!] failed to write full body to stdout");
-    }
-
-
-cleanup_resp:
-    rh_response_free(&resp);
-cleanup_raw:
-    rh_buf_free(&raw);
-cleanup_req:
-    rh_buf_free(&req);
-cleanup_transport:
-    transport.close(&transport); // owns fd, closes it 
-    rh_url_free(&url);
+    int rc = run_normal_mode(url_str, method_arg, headers, header_count, body, body_len,
+                             insecure, output_mode, show_timing);
     free(headers);
     if (have_data_file_buf) rh_buf_free(&data_file_buf);
+    return rc;
+}
 
-    return err == RH_OK ? 0 : 1;
-} 
