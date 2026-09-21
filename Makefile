@@ -27,6 +27,10 @@ OBJS     := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 LIB_SRCS := $(filter-out $(SRC_DIR)/main.c,$(SRCS))
 LIB_OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(LIB_SRCS))
 
+# One binary per tests/*.c, each links the static lib
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
+TEST_BINS := $(patsubst $(TEST_DIR)/%.c,$(TEST_BUILD_DIR)/%,$(TEST_SRCS))
+
 .PHONY: all debug release test clean
 
 all: release
@@ -50,13 +54,28 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# T5.1 wires real test sources into TEST_BIN once tests/ has content.
-test: debug
-	@if [ -z "$$(ls -A $(TEST_DIR) 2>/dev/null | grep -v .gitkeep)" ]; then \
+# Build + run every tests/*.c against the lib, under ASan/UBSan. Fails the
+# target if any suite exits non-zero.
+test: CFLAGS := $(STD) $(WARN) $(INCLUDE) -O0 -g -fsanitize=address,undefined
+test: LDFLAGS += -fsanitize=address,undefined
+test: $(TEST_BINS)
+	@if [ -z "$(strip $(TEST_BINS))" ]; then \
 		echo "no tests yet (tests/ is empty) - nothing to run"; \
 	else \
-		echo "test harness not wired yet - see T5.1"; \
+		fail=0; \
+		for t in $(TEST_BINS); do \
+			echo "=== $$t ==="; \
+			./$$t || fail=1; \
+		done; \
+		if [ $$fail -ne 0 ]; then echo "SOME TESTS FAILED"; exit 1; \
+		else echo "ALL TESTS PASSED"; fi; \
 	fi
+
+$(TEST_BUILD_DIR)/%: $(TEST_DIR)/%.c $(LIB) | $(TEST_BUILD_DIR)
+	$(CC) $(CFLAGS) $< $(LIB) -o $@ $(LDFLAGS) $(LDLIBS)
+
+$(TEST_BUILD_DIR):
+	mkdir -p $(TEST_BUILD_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN) $(LIB)
