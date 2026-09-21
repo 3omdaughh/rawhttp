@@ -10,3 +10,4 @@ vendor/
 *.gcno
 compile_commands.json
 .cache/
+typescript
