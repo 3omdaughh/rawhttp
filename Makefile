@@ -3,6 +3,11 @@ STD     := -std=c11
 WARN    := -Wall -Wextra -Werror
 INCLUDE := -Iinclude
 
+# Base flags so any target (incl. a direct `make librawhttp.a`) compiles with
+# the include path. release/debug override this with their own optimization
+# and sanitizer settings.
+CFLAGS  := $(STD) $(WARN) $(INCLUDE) -O2 -g
+
 # Extra libs get appended here as phases land: -lssl -lcrypto (T2.5), -lpthread (T4.2)
 LDLIBS  := -lssl -lcrypto
 
