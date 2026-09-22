@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev clang
+
+      - name: Release build (-Wall -Wextra -Werror)
+        run: make
+
+      - name: Unit tests (ASan + UBSan)
+        run: make test
+
+      - name: Fuzz corpus replay (gcc + ASan, no clang)
+        run: make fuzz-replay
+
+      - name: Build libFuzzer targets (clang)
+        run: make fuzz FUZZ_CC=clang
+
+      - name: Short libFuzzer smoke run
+        run: |
+          for t in build/fuzz/fuzz_response build/fuzz/fuzz_chunked; do
+            sub="${t##*/fuzz_}"
+            echo "== fuzzing $t for 30s =="
+            "$t" "tests/fuzz/corpus/$sub" \
+              -max_total_time=30 -max_len=4096 -print_final_stats=1
+          done

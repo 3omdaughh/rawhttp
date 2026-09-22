@@ -31,7 +31,15 @@ LIB_OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(LIB_SRCS))
 TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
 TEST_BINS := $(patsubst $(TEST_DIR)/%.c,$(TEST_BUILD_DIR)/%,$(TEST_SRCS))
 
-.PHONY: all debug release test clean
+# libFuzzer targets (T5.3): one per tests/fuzz/fuzz_*.c
+FUZZ_DIR         := tests/fuzz
+FUZZ_BUILD_DIR   := build/fuzz
+FUZZ_CC          ?= clang
+FUZZ_HARNESS     := $(wildcard $(FUZZ_DIR)/fuzz_*.c)
+FUZZ_BINS        := $(patsubst $(FUZZ_DIR)/%.c,$(FUZZ_BUILD_DIR)/%,$(FUZZ_HARNESS))
+FUZZ_REPLAY_BINS := $(patsubst $(FUZZ_DIR)/%.c,$(FUZZ_BUILD_DIR)/%-replay,$(FUZZ_HARNESS))
+
+.PHONY: all debug release test fuzz fuzz-replay clean
 
 all: release
 
@@ -76,6 +84,35 @@ $(TEST_BUILD_DIR)/%: $(TEST_DIR)/%.c $(LIB) | $(TEST_BUILD_DIR)
 
 $(TEST_BUILD_DIR):
 	mkdir -p $(TEST_BUILD_DIR)
+
+# --- Fuzzing (T5.3) ---------------------------------------------------------
+# `make fuzz` needs clang (libFuzzer). Then run a target against its corpus:
+#   ./build/fuzz/fuzz_response tests/fuzz/corpus/response
+# `make fuzz-replay` needs only gcc: it builds each target with a standalone
+# driver and replays the seed corpus once (crash repro + CI smoke, no clang).
+
+fuzz: $(FUZZ_BINS)
+	@echo "fuzz targets: $(FUZZ_BINS)"
+	@echo "run e.g.: ./$(FUZZ_BUILD_DIR)/fuzz_response $(FUZZ_DIR)/corpus/response"
+
+$(FUZZ_BUILD_DIR)/%: $(FUZZ_DIR)/%.c $(LIB_SRCS) | $(FUZZ_BUILD_DIR)
+	$(FUZZ_CC) $(STD) $(INCLUDE) -I$(FUZZ_DIR) -g -O1 \
+		-fsanitize=fuzzer,address,undefined $(FUZZ_DIR)/$*.c $(LIB_SRCS) -o $@ $(LDLIBS)
+
+fuzz-replay: $(FUZZ_REPLAY_BINS)
+	@for b in $(FUZZ_REPLAY_BINS); do \
+		name=$${b##*/}; sub=$${name%-replay}; sub=$${sub#fuzz_}; \
+		echo "=== $$b (corpus: $$sub) ==="; \
+		$$b $(FUZZ_DIR)/corpus/$$sub/* || exit 1; \
+	done; \
+	echo "FUZZ REPLAY OK"
+
+$(FUZZ_BUILD_DIR)/%-replay: $(FUZZ_DIR)/%.c $(FUZZ_DIR)/standalone_main.c $(LIB_SRCS) | $(FUZZ_BUILD_DIR)
+	$(CC) $(STD) $(INCLUDE) -I$(FUZZ_DIR) -g -O1 -fsanitize=address,undefined \
+		$(FUZZ_DIR)/$*.c $(FUZZ_DIR)/standalone_main.c $(LIB_SRCS) -o $@ $(LDLIBS)
+
+$(FUZZ_BUILD_DIR):
+	mkdir -p $(FUZZ_BUILD_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN) $(LIB)
