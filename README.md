@@ -5,11 +5,6 @@ request smuggling / desync research. No libcurl, no normalization — `rawhttp`
 writes exactly the bytes you give it, which is what makes CL.TE, TE.CL, and
 CL.CL desync payloads possible in the first place.
 
-**Status: Phase 5 complete.** Real client, TLS (verify-on), the pentest
-weapon (raw / smuggle / fuzz), Phase 4 polish (timeouts, proxy, concurrent
-scan, output formats), and Phase 5 (wired `make test`, CI, libFuzzer harnesses,
-docs).
-
 ```
 $ ./rawhttp --smuggle cl.te --target victim.lab:80 --probe
 --- cl.te payload, sending 97 bytes to victim.lab:80 ---
